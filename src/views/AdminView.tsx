@@ -133,11 +133,11 @@ export default function AdminView() {
               <label className="col-span-2 text-xs font-semibold text-slate-700">行程时长<input value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} placeholder="例如：3 小时 20 分" className={inputClass} /></label>
               <div className="col-span-2 grid gap-3 xl:grid-cols-2">
                 <div>
-                  <div className="mb-1.5 text-xs font-bold text-sky-800">出发机场位置</div>
+                  <div className="mb-1.5 text-xs font-bold text-sky-800">出发地点位置</div>
                   <LocationPicker compact value={{ lat: form.departure_lat ?? form.lat, lng: form.departure_lng ?? form.lng, title: form.departure_place }} onChange={(location) => setForm((current) => ({ ...current, departure_place: location.title || current.departure_place, departure_lat: location.lat, departure_lng: location.lng }))} />
                 </div>
                 <div>
-                  <div className="mb-1.5 text-xs font-bold text-indigo-800">到达机场位置</div>
+                  <div className="mb-1.5 text-xs font-bold text-indigo-800">到达地点位置</div>
                   <LocationPicker compact value={{ lat: form.arrival_lat ?? form.lat, lng: form.arrival_lng ?? form.lng, title: form.arrival_place }} onChange={(location) => setForm((current) => ({ ...current, arrival_place: location.title || current.arrival_place, arrival_lat: location.lat, arrival_lng: location.lng, lat: location.lat, lng: location.lng }))} />
                 </div>
               </div>
