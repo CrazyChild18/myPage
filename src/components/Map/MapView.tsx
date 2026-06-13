@@ -279,6 +279,10 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
       <MapContainer
         center={[32, 12]}
         zoom={2}
+        dragging
+        scrollWheelZoom
+        touchZoom
+        doubleClickZoom
         className="w-full h-full"
         zoomControl={false}
       >

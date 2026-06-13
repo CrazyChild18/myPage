@@ -124,7 +124,7 @@ export default function App() {
       )}
 
       {selectedTripSlug && <main className={`relative z-10 mx-auto w-full print:px-0 ${
-        activeTab === 'explore' ? 'h-screen max-w-none' : 'max-w-7xl px-4 py-5 sm:px-6 lg:px-8'
+        activeTab === 'explore' ? 'pointer-events-none h-screen max-w-none' : 'max-w-7xl px-4 py-5 sm:px-6 lg:px-8'
       }`}>
         <AnimatePresence mode="wait">
           <motion.div
@@ -133,7 +133,7 @@ export default function App() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.22 }}
-            className={`w-full ${activeTab === 'explore' ? 'h-full' : ''}`}
+            className={`w-full ${activeTab === 'explore' ? 'pointer-events-none h-full' : ''}`}
           >
             {activeTab === 'explore' && <ExploreView />}
             {activeTab === 'admin' && <AdminView />}
