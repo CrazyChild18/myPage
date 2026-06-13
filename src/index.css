@@ -29,6 +29,69 @@
   border-top-color: rgb(2 6 23 / 82%);
 }
 
+.trip-pin-marker {
+  background: transparent;
+  border: 0;
+}
+
+.trip-pin {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: max-content;
+  max-width: 180px;
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+  text-shadow: 0 2px 6px rgb(2 6 23 / 90%);
+  transition: transform 220ms ease;
+}
+
+.trip-pin::after {
+  position: absolute;
+  left: 13px;
+  top: 24px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 10px solid #38bdf8;
+  content: "";
+  filter: drop-shadow(0 3px 3px rgb(2 6 23 / 45%));
+}
+
+.trip-pin-dot {
+  display: grid;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 3px solid white;
+  border-radius: 999px;
+  background: #38bdf8;
+  box-shadow: 0 8px 20px rgb(14 165 233 / 45%);
+}
+
+.trip-pin-dot::after {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: white;
+  content: "";
+}
+
+.trip-pin-selected {
+  transform: scale(1.08);
+}
+
+.trip-pin-selected .trip-pin-dot {
+  background: #818cf8;
+}
+
+.trip-pin-selected::after {
+  border-top-color: #818cf8;
+}
+
 @page {
   size: A4 portrait;
   margin: 10mm 9mm 10mm;

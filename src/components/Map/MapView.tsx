@@ -7,7 +7,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { useItineraryStore } from '../../store/useItineraryStore';
-import { ItineraryNode, ItineraryEdge } from '../../types';
+import { ItineraryNode, ItineraryEdge, TripSummary } from '../../types';
 import { Plane, Car, Train, Navigation, Compass, X, ChevronLeft, ChevronRight } from 'lucide-react';
 
 // Custom icons setup using dynamic SVG inside DivIcon
@@ -120,6 +120,13 @@ const transportEndpointIcon = (selected = false) => L.divIcon({
   iconAnchor: [selected ? 14 : 11, selected ? 14 : 11],
 });
 
+const tripPinIcon = (trip: TripSummary, selected: boolean) => L.divIcon({
+  className: 'trip-pin-marker',
+  html: `<div class="trip-pin ${selected ? 'trip-pin-selected' : ''}"><div class="trip-pin-dot"></div><span>${trip.title}</span></div>`,
+  iconSize: [180, 42],
+  iconAnchor: [18, 36],
+});
+
 const transportPath = (node: ItineraryNode): [number, number][] => {
   if (node.departure_lat == null || node.departure_lng == null || node.arrival_lat == null || node.arrival_lng == null) return [];
   let endLng = node.arrival_lng;
@@ -168,7 +175,23 @@ function FitBoundsController({ points, activeDay }: { points: [number, number][]
   return null;
 }
 
-export default function MapView() {
+interface MapViewProps {
+  mode?: 'home' | 'trip';
+  trips?: TripSummary[];
+  selectedHomeSlug?: string | null;
+  onSelectHomeTrip?: (slug: string) => void;
+  onOpenHomeTrip?: (slug: string) => void;
+}
+
+function HomeMapController({ trip }: { trip: TripSummary | null }) {
+  const map = useMap();
+  useEffect(() => {
+    map.flyTo(trip ? [trip.center_lat, trip.center_lng] : [32, 12], trip ? 5 : 2, { duration: 1.25 });
+  }, [map, trip]);
+  return null;
+}
+
+export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = null, onSelectHomeTrip, onOpenHomeTrip }: MapViewProps) {
   const { 
     nodes, 
     edges, 
@@ -179,7 +202,7 @@ export default function MapView() {
     activeDay 
   } = useItineraryStore();
 
-  const [mapStyle, setMapStyle] = useState<'light' | 'dark' | 'voyager'>('voyager');
+  const [mapStyle, setMapStyle] = useState<'light' | 'dark' | 'voyager'>('dark');
   const [preview, setPreview] = useState<{ node: ItineraryNode; index: number } | null>(null);
 
   // Filter nodes according to current activeDay selector
@@ -239,12 +262,9 @@ export default function MapView() {
     }
   };
 
-  const mapCenter: [number, number] = visibleNodes.length > 0 
-    ? [visibleNodes[0].lat, visibleNodes[0].lng] 
-    : [64.1466, -21.9426]; // Default to Reykjavik
-
+  const selectedHomeTrip = trips.find((trip) => trip.slug === selectedHomeSlug) || null;
   return (
-    <div className="relative w-full h-full shadow-inner bg-slate-100 overflow-hidden rounded-2xl border border-white/20">
+    <div className="relative h-full w-full overflow-hidden bg-slate-100">
       {preview && <div className="absolute inset-0 z-[12000] flex items-center justify-center bg-slate-950/75 p-5 backdrop-blur-sm">
         <button onClick={() => setPreview(null)} className="absolute right-5 top-5 rounded-full bg-white/15 p-2 text-white"><X className="h-5 w-5" /></button>
         {(preview.node.image_urls?.length || 0) > 1 && <><button onClick={() => setPreview({ ...preview, index: (preview.index - 1 + (preview.node.image_urls?.length || 1)) % (preview.node.image_urls?.length || 1) })} className="absolute left-4 rounded-full bg-white/15 p-2 text-white"><ChevronLeft /></button><button onClick={() => setPreview({ ...preview, index: (preview.index + 1) % (preview.node.image_urls?.length || 1) })} className="absolute right-4 rounded-full bg-white/15 p-2 text-white"><ChevronRight /></button></>}
@@ -252,7 +272,7 @@ export default function MapView() {
       </div>}
       
       {/* Map Custom Theme Selector Trigger */}
-      <div className="absolute top-4 right-4 z-[9999] flex items-center space-x-1 bg-white/70 backdrop-blur-md rounded-full px-2.5 py-1 shadow-md border border-white/60">
+      {mode === 'trip' && <div className="absolute top-24 right-5 z-[9999] flex items-center space-x-1 bg-white/70 backdrop-blur-md rounded-full px-2.5 py-1 shadow-md border border-white/60">
         <span className="text-[11px] font-semibold text-slate-600 px-1.5 py-0.5">地图底图</span>
         <button 
           onClick={() => setMapStyle('voyager')}
@@ -272,44 +292,57 @@ export default function MapView() {
         >
           暗色
         </button>
-      </div>
-      <div className="absolute bottom-7 left-4 z-[9999] hidden items-center gap-3 rounded-full border border-white/70 bg-white/80 px-3 py-2 text-[9px] font-bold text-slate-600 shadow-lg backdrop-blur-md md:flex">
+      </div>}
+      {mode === 'trip' && <div className="absolute bottom-7 left-[calc(33.333%+2rem)] z-[9999] hidden items-center gap-3 rounded-full border border-white/70 bg-white/80 px-3 py-2 text-[9px] font-bold text-slate-600 shadow-lg backdrop-blur-md md:flex">
         <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-sky-400" /><Plane className="h-3 w-3 text-sky-500" />区间交通</span>
         <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-slate-400" />地面路线</span>
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-sky-500 ring-2 ring-white" />区间端点 / 转机</span>
-      </div>
+      </div>}
 
       <MapContainer
-        center={mapCenter}
-        zoom={12}
+        center={[32, 12]}
+        zoom={2}
+        minZoom={2}
         className="w-full h-full"
         zoomControl={false} // Custom zoom buttons in desktop layout
       >
         {/* Tilings */}
-        {mapStyle === 'voyager' && (
+        {(mode === 'home' || mapStyle === 'dark') && (
+          <TileLayer attribution='&copy; <a href="https://carto.com/">CARTO</a>' url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+        )}
+        {mode === 'trip' && mapStyle === 'voyager' && (
           <TileLayer
             attribution='&copy; <a href="https://carto.com/">CartoDB</a> voyager'
             url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
           />
         )}
-        {mapStyle === 'light' && (
+        {mode === 'trip' && mapStyle === 'light' && (
           <TileLayer
             attribution='&copy; <a href="https://carto.com/">CartoDB</a> light'
             url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
           />
         )}
-        {mapStyle === 'dark' && (
-          <TileLayer
-            attribution='&copy; <a href="https://carto.com/">CartoDB</a> dark'
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-          />
-        )}
-
         {/* Sync controllers */}
-        <MapNavController activeNode={activeNode} />
-        {fitPoints.length > 0 && <FitBoundsController points={fitPoints} activeDay={activeDay} />}
+        {mode === 'home' ? <HomeMapController trip={selectedHomeTrip} /> : <>
+          <MapNavController activeNode={activeNode} />
+          {fitPoints.length > 0 && <FitBoundsController points={fitPoints} activeDay={activeDay} />}
+        </>}
 
-        {visibleTransportRoutes.map((route) => {
+        {mode === 'home' && trips.map((trip) => (
+          <Marker
+            key={trip.slug}
+            position={[trip.center_lat, trip.center_lng]}
+            icon={tripPinIcon(trip, trip.slug === selectedHomeSlug)}
+            eventHandlers={{
+              click: () => {
+                onSelectHomeTrip?.(trip.slug);
+                window.setTimeout(() => onOpenHomeTrip?.(trip.slug), 650);
+              },
+            }}
+          />
+        ))}
+
+        {mode === 'trip' && visibleTransportRoutes.map((route) => {
           const path = transportPath(route);
           const selected = activeNodeId === route.id;
           const midpoint = path[Math.floor(path.length / 2)];
@@ -333,7 +366,7 @@ export default function MapView() {
         })}
 
         {/* Draw edges (connecting networks) */}
-        {visibleEdges.map((edge) => {
+        {mode === 'trip' && visibleEdges.map((edge) => {
           const data = getEdgeCoordinatesAndMeta(edge);
           if (!data) return null;
 
@@ -392,7 +425,7 @@ export default function MapView() {
         })}
 
         {/* Draw Nodes MapPins */}
-        {visibleNodes.map((node) => {
+        {mode === 'trip' && visibleNodes.map((node) => {
           const isSelected = activeNodeId === node.id;
           
           return (
