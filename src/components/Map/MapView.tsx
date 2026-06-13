@@ -149,6 +149,7 @@ function MapNavController({ activeNode }: { activeNode: ItineraryNode | null }) 
 
   useEffect(() => {
     if (activeNode) {
+      const isMobile = window.matchMedia('(max-width: 639px)').matches;
       if (
         activeNode.type === 'transport' &&
         activeNode.departure_lat != null &&
@@ -161,11 +162,11 @@ function MapNavController({ activeNode }: { activeNode: ItineraryNode | null }) 
             [activeNode.departure_lat, activeNode.departure_lng],
             [activeNode.arrival_lat, activeNode.arrival_lng],
           ]),
-          { animate: true, duration: 0.8, padding: [70, 70], maxZoom: 9 },
+          { animate: true, duration: 0.8, padding: [70, 70], maxZoom: isMobile ? 6 : 9 },
         );
         return;
       }
-      map.flyTo([activeNode.lat, activeNode.lng], 14, {
+      map.flyTo([activeNode.lat, activeNode.lng], isMobile ? 11 : 14, {
         animate: true,
         duration: 1.2
       });
