@@ -32,6 +32,11 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
   const [createError, setCreateError] = useState<string | null>(null);
   const [draft, setDraft] = useState({ title: '', start_date: '', end_date: '', origin: '', travelers: 1 });
 
+  const focusAndOpenTrip = (slug: string) => {
+    onSelectTrip(slug);
+    window.setTimeout(() => onOpenTrip(slug), 650);
+  };
+
   const createTrip = async (event: React.FormEvent) => {
     event.preventDefault();
     setCreateError(null);
@@ -136,9 +141,7 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
             {filteredTrips.map((trip) => (
               <button
                 key={trip.slug}
-                onMouseEnter={() => onSelectTrip(trip.slug)}
-                onFocus={() => onSelectTrip(trip.slug)}
-                onClick={() => onOpenTrip(trip.slug)}
+                onClick={() => focusAndOpenTrip(trip.slug)}
                 className={`group w-full overflow-hidden rounded-2xl border text-left transition ${
                   selectedSlug === trip.slug ? 'border-indigo-400/60 bg-white/10' : 'border-white/5 bg-white/[0.035] hover:bg-white/[0.07]'
                 }`}
@@ -174,7 +177,7 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
               <div className="min-w-0 flex-1 py-1">
                 <div className="text-[10px] font-bold text-indigo-300">{formatDate(selectedTrip.start_date)} - {formatDate(selectedTrip.end_date)}</div>
                 <h2 className="mt-1 truncate text-sm font-bold">{selectedTrip.title}</h2>
-                <button onClick={() => onOpenTrip(selectedTrip.slug)} className="mt-3 flex items-center gap-1.5 rounded-xl bg-indigo-500 px-3 py-2 text-[11px] font-bold text-white">
+                <button onClick={() => focusAndOpenTrip(selectedTrip.slug)} className="mt-3 flex items-center gap-1.5 rounded-xl bg-indigo-500 px-3 py-2 text-[11px] font-bold text-white">
                   打开旅行计划 <ArrowUpRight className="h-3.5 w-3.5" />
                 </button>
               </div>
@@ -197,7 +200,7 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
               <span className="flex items-center gap-1"><Compass className="h-3.5 w-3.5" />{selectedTrip.node_count} 个地点</span>
               <span className="flex items-center gap-1"><Users className="h-3.5 w-3.5" />{selectedTrip.travelers} 人</span>
             </div>
-            <button onClick={() => onOpenTrip(selectedTrip.slug)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-500 py-3 text-xs font-bold text-white transition hover:bg-indigo-400">
+            <button onClick={() => focusAndOpenTrip(selectedTrip.slug)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-500 py-3 text-xs font-bold text-white transition hover:bg-indigo-400">
               打开旅行计划 <ArrowUpRight className="h-4 w-4" />
             </button>
           </div>

@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Polyline, Popup, Tooltip, ZoomControl, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryNode, ItineraryEdge, TripSummary } from '../../types';
@@ -202,7 +202,6 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     activeDay 
   } = useItineraryStore();
 
-  const [mapStyle, setMapStyle] = useState<'light' | 'dark' | 'voyager'>('dark');
   const [preview, setPreview] = useState<{ node: ItineraryNode; index: number } | null>(null);
 
   // Filter nodes according to current activeDay selector
@@ -264,35 +263,13 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
 
   const selectedHomeTrip = trips.find((trip) => trip.slug === selectedHomeSlug) || null;
   return (
-    <div className="relative h-full w-full overflow-hidden bg-slate-100">
+    <div className="relative isolate z-0 h-full w-full overflow-hidden bg-slate-100">
       {preview && <div className="absolute inset-0 z-[12000] flex items-center justify-center bg-slate-950/75 p-5 backdrop-blur-sm">
         <button onClick={() => setPreview(null)} className="absolute right-5 top-5 rounded-full bg-white/15 p-2 text-white"><X className="h-5 w-5" /></button>
         {(preview.node.image_urls?.length || 0) > 1 && <><button onClick={() => setPreview({ ...preview, index: (preview.index - 1 + (preview.node.image_urls?.length || 1)) % (preview.node.image_urls?.length || 1) })} className="absolute left-4 rounded-full bg-white/15 p-2 text-white"><ChevronLeft /></button><button onClick={() => setPreview({ ...preview, index: (preview.index + 1) % (preview.node.image_urls?.length || 1) })} className="absolute right-4 rounded-full bg-white/15 p-2 text-white"><ChevronRight /></button></>}
         <img src={(preview.node.image_urls?.length ? preview.node.image_urls : [preview.node.image_url || ''])[preview.index]} alt={preview.node.title} className="max-h-[78%] max-w-[85%] rounded-2xl object-contain shadow-2xl" />
       </div>}
       
-      {/* Map Custom Theme Selector Trigger */}
-      {mode === 'trip' && <div className="absolute top-24 right-5 z-[9999] flex items-center space-x-1 bg-white/70 backdrop-blur-md rounded-full px-2.5 py-1 shadow-md border border-white/60">
-        <span className="text-[11px] font-semibold text-slate-600 px-1.5 py-0.5">地图底图</span>
-        <button 
-          onClick={() => setMapStyle('voyager')}
-          className={`text-[10px] tracking-wide px-2.5 py-1 rounded-full font-medium transition-all ${mapStyle === 'voyager' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-700 hover:bg-white/50'}`}
-        >
-          人文
-        </button>
-        <button 
-          onClick={() => setMapStyle('light')}
-          className={`text-[10px] tracking-wide px-2.5 py-1 rounded-full font-medium transition-all ${mapStyle === 'light' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-700 hover:bg-white/50'}`}
-        >
-          浅色
-        </button>
-        <button 
-          onClick={() => setMapStyle('dark')}
-          className={`text-[10px] tracking-wide px-2.5 py-1 rounded-full font-medium transition-all ${mapStyle === 'dark' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-700 hover:bg-white/50'}`}
-        >
-          暗色
-        </button>
-      </div>}
       {mode === 'trip' && <div className="absolute bottom-7 left-[calc(33.333%+2rem)] z-[9999] hidden items-center gap-3 rounded-full border border-white/70 bg-white/80 px-3 py-2 text-[9px] font-bold text-slate-600 shadow-lg backdrop-blur-md md:flex">
         <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-sky-400" /><Plane className="h-3 w-3 text-sky-500" />区间交通</span>
         <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-slate-400" />地面路线</span>
@@ -302,26 +279,14 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
       <MapContainer
         center={[32, 12]}
         zoom={2}
-        minZoom={2}
         className="w-full h-full"
-        zoomControl={false} // Custom zoom buttons in desktop layout
+        zoomControl={false}
       >
-        {/* Tilings */}
-        {(mode === 'home' || mapStyle === 'dark') && (
-          <TileLayer attribution='&copy; <a href="https://carto.com/">CARTO</a>' url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
-        )}
-        {mode === 'trip' && mapStyle === 'voyager' && (
-          <TileLayer
-            attribution='&copy; <a href="https://carto.com/">CartoDB</a> voyager'
-            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-          />
-        )}
-        {mode === 'trip' && mapStyle === 'light' && (
-          <TileLayer
-            attribution='&copy; <a href="https://carto.com/">CartoDB</a> light'
-            url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
-          />
-        )}
+        <TileLayer
+          attribution='&copy; <a href="https://carto.com/">CartoDB</a> voyager'
+          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+        />
+        <ZoomControl position="bottomright" />
         {/* Sync controllers */}
         {mode === 'home' ? <HomeMapController trip={selectedHomeTrip} /> : <>
           <MapNavController activeNode={activeNode} />
@@ -339,7 +304,14 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
                 window.setTimeout(() => onOpenHomeTrip?.(trip.slug), 650);
               },
             }}
-          />
+          >
+            <Tooltip direction="top" offset={[0, -34]} opacity={0.96}>
+              <div className="min-w-40 py-0.5">
+                <div className="text-xs font-black text-slate-900">{trip.title}</div>
+                <div className="mt-1 text-[10px] font-semibold text-slate-500">{trip.start_date} - {trip.end_date} · {trip.day_count} 天</div>
+              </div>
+            </Tooltip>
+          </Marker>
         ))}
 
         {mode === 'trip' && visibleTransportRoutes.map((route) => {
