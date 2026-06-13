@@ -5,6 +5,7 @@ import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryNode, ItineraryType } from '../../types';
 
 const meta: Record<Exclude<ItineraryType, 'transport'>, { label: string; tone: string }> = {
+  transfer: { label: '转机', tone: 'bg-sky-50 text-sky-700' },
   hotel: { label: '住宿', tone: 'bg-emerald-50 text-emerald-700' },
   restaurant: { label: '餐饮', tone: 'bg-rose-50 text-rose-700' },
   sightseeing: { label: '景点', tone: 'bg-violet-50 text-violet-700' },

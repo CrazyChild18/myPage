@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type ItineraryType = 'transport' | 'hotel' | 'restaurant' | 'sightseeing' | 'leisure' | 'shopping';
+export type ItineraryType = 'transport' | 'transfer' | 'hotel' | 'restaurant' | 'sightseeing' | 'leisure' | 'shopping';
 export type TransportMode = 'flight' | 'high_speed_rail' | 'train' | 'bus' | 'ferry' | 'other';
 
 export interface ItineraryNode {
@@ -21,6 +21,10 @@ export interface ItineraryNode {
   transport_mode?: TransportMode;
   departure_place?: string;
   arrival_place?: string;
+  departure_lat?: number | null;
+  departure_lng?: number | null;
+  arrival_lat?: number | null;
+  arrival_lng?: number | null;
   arrival_time?: string;
   arrival_date?: string;
   service_number?: string;

@@ -58,6 +58,14 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
         </svg>
       `;
       break;
+    case 'transfer':
+      color = '#0ea5e9';
+      iconSvg = `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-white">
+          <path d="M22 2 9 15" /><path d="m22 2-7 20-4-9-9-4Z" />
+        </svg>
+      `;
+      break;
     case 'shopping':
       color = '#ec4899'; // bubblegum pink
       iconSvg = `
@@ -105,6 +113,29 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
   });
 };
 
+const airportIcon = (selected = false) => L.divIcon({
+  className: 'airport-marker',
+  html: `<div style="width:${selected ? 28 : 22}px;height:${selected ? 28 : 22}px;border-radius:999px;background:#0ea5e9;border:3px solid white;box-shadow:0 4px 14px rgba(14,165,233,.45);display:flex;align-items:center;justify-content:center"><div style="width:6px;height:6px;border-radius:999px;background:white"></div></div>`,
+  iconSize: [selected ? 28 : 22, selected ? 28 : 22],
+  iconAnchor: [selected ? 14 : 11, selected ? 14 : 11],
+});
+
+const flightPath = (node: ItineraryNode): [number, number][] => {
+  if (node.departure_lat == null || node.departure_lng == null || node.arrival_lat == null || node.arrival_lng == null) return [];
+  let endLng = node.arrival_lng;
+  const startLng = node.departure_lng;
+  if (endLng - startLng > 180) endLng -= 360;
+  if (endLng - startLng < -180) endLng += 360;
+  const distance = Math.hypot(node.arrival_lat - node.departure_lat, endLng - startLng);
+  const lift = Math.min(24, Math.max(4, distance * 0.16));
+  return Array.from({ length: 25 }, (_, index) => {
+    const t = index / 24;
+    const lat = node.departure_lat! + (node.arrival_lat! - node.departure_lat!) * t + Math.sin(Math.PI * t) * lift;
+    const lng = startLng + (endLng - startLng) * t;
+    return [lat, lng];
+  });
+};
+
 // Map view controller focusing on the active node
 function MapNavController({ activeNode }: { activeNode: ItineraryNode | null }) {
   const map = useMap();
@@ -122,17 +153,17 @@ function MapNavController({ activeNode }: { activeNode: ItineraryNode | null }) 
 }
 
 // Fit-Bounds helper to encompass active items automatically
-function FitBoundsController({ nodes, activeDay }: { nodes: ItineraryNode[]; activeDay: string | number }) {
+function FitBoundsController({ points, activeDay }: { points: [number, number][]; activeDay: string | number }) {
   const map = useMap();
   const lastFittedDay = useRef<string | number | null>(null);
 
   useEffect(() => {
-    if (nodes.length === 0 || lastFittedDay.current === activeDay) return;
+    if (points.length === 0 || lastFittedDay.current === activeDay) return;
 
-    const bounds = L.latLngBounds(nodes.map(n => [n.lat, n.lng]));
+    const bounds = L.latLngBounds(points);
     map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
     lastFittedDay.current = activeDay;
-  }, [activeDay, map, nodes]);
+  }, [activeDay, map, points]);
 
   return null;
 }
@@ -153,6 +184,22 @@ export default function MapView() {
 
   // Filter nodes according to current activeDay selector
   const visibleNodes = nodes.filter(n => n.type !== 'transport' && (activeDay === 'all' || n.day === activeDay));
+  const visibleFlights = nodes.filter((node) =>
+    node.type === 'transport' &&
+    node.transport_mode === 'flight' &&
+    node.departure_lat != null &&
+    node.departure_lng != null &&
+    node.arrival_lat != null &&
+    node.arrival_lng != null &&
+    (activeDay === 'all' || node.day === activeDay)
+  );
+  const fitPoints: [number, number][] = [
+    ...visibleNodes.map((node) => [node.lat, node.lng] as [number, number]),
+    ...visibleFlights.flatMap((node) => [
+      [node.departure_lat!, node.departure_lng!] as [number, number],
+      [node.arrival_lat!, node.arrival_lng!] as [number, number],
+    ]),
+  ];
 
   const activeNode = nodes.find(n => n.id === activeNodeId && n.type !== 'transport') || null;
 
@@ -227,6 +274,11 @@ export default function MapView() {
           暗色
         </button>
       </div>
+      <div className="absolute bottom-7 left-4 z-[9999] hidden items-center gap-3 rounded-full border border-white/70 bg-white/80 px-3 py-2 text-[9px] font-bold text-slate-600 shadow-lg backdrop-blur-md md:flex">
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-sky-400" /><Plane className="h-3 w-3 text-sky-500" />航班</span>
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-slate-400" />地面路线</span>
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-sky-500 ring-2 ring-white" />机场 / 转机</span>
+      </div>
 
       <MapContainer
         center={mapCenter}
@@ -256,7 +308,30 @@ export default function MapView() {
 
         {/* Sync controllers */}
         <MapNavController activeNode={activeNode} />
-        {visibleNodes.length > 0 && <FitBoundsController nodes={visibleNodes} activeDay={activeDay} />}
+        {fitPoints.length > 0 && <FitBoundsController points={fitPoints} activeDay={activeDay} />}
+
+        {visibleFlights.map((flight) => {
+          const path = flightPath(flight);
+          const selected = activeNodeId === flight.id;
+          const midpoint = path[Math.floor(path.length / 2)];
+          return <React.Fragment key={`flight-${flight.id}`}>
+            <Polyline
+              positions={path}
+              pathOptions={{ color: selected ? '#2563eb' : '#38bdf8', weight: selected ? 4 : 2.5, opacity: selected ? 1 : 0.78, dashArray: selected ? undefined : '9, 9' }}
+              eventHandlers={{ click: () => setActiveNodeId(flight.id) }}
+            >
+              <Popup position={midpoint}>
+                <div className="min-w-48 font-sans">
+                  <div className="flex items-center gap-1.5 text-xs font-black text-sky-700"><Plane className="h-3.5 w-3.5" />{flight.service_number || '航班'}</div>
+                  <div className="mt-2 text-[11px] font-bold text-slate-800">{flight.departure_place} → {flight.arrival_place}</div>
+                  <div className="mt-1 text-[9px] text-slate-500">D{flight.day} · {flight.time} - {flight.arrival_time || '--:--'} · {flight.duration || '时长待补充'}</div>
+                </div>
+              </Popup>
+            </Polyline>
+            <Marker position={[flight.departure_lat!, flight.departure_lng!]} icon={airportIcon(selected)} eventHandlers={{ click: () => setActiveNodeId(flight.id) }} />
+            <Marker position={[flight.arrival_lat!, flight.arrival_lng!]} icon={airportIcon(selected)} eventHandlers={{ click: () => setActiveNodeId(flight.id) }} />
+          </React.Fragment>;
+        })}
 
         {/* Draw edges (connecting networks) */}
         {visibleEdges.map((edge) => {
@@ -347,12 +422,14 @@ export default function MapView() {
                             background: node.type === 'hotel' ? '#10b981' :
                                         node.type === 'restaurant' ? '#f43f5e' :
                                         node.type === 'sightseeing' ? '#8b5cf6' :
+                                        node.type === 'transfer' ? '#0ea5e9' :
                                         node.type === 'leisure' ? '#f59e0b' :
                                         node.type === 'shopping' ? '#ec4899' : '#06b6d4'
                           }}>
                       {node.type === 'hotel' ? '酒店' :
                        node.type === 'restaurant' ? '餐厅' :
                        node.type === 'sightseeing' ? '景点' :
+                       node.type === 'transfer' ? '转机' :
                        node.type === 'leisure' ? '休闲' :
                        node.type === 'shopping' ? '购物' : '交通'}
                     </span>

@@ -43,6 +43,16 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 GEOCODE_CACHE_TTL = 24 * 60 * 60
 REVERSE_CACHE_TTL = 7 * 24 * 60 * 60
 GEOCODE_CACHE = {}
+AIRPORT_COORDINATES = {
+    "北京首都机场": (40.0801, 116.5847),
+    "首都机场": (40.0801, 116.5847),
+    "阿什哈巴德机场": (37.9868, 58.3610),
+    "伊斯坦布尔机场": (41.2753, 28.7519),
+    "凯斯楚普机场": (55.6180, 12.6561),
+    "凯夫拉维克机场": (63.9850, -22.6056),
+    "里加机场": (56.9236, 23.9711),
+    "新乌兰巴托国际机场": (47.6469, 106.8198),
+}
 
 app = Flask(__name__, static_folder=str(DIST_DIR), static_url_path="")
 app.config["MAX_CONTENT_LENGTH"] = MAX_IMAGE_BYTES
@@ -101,6 +111,10 @@ def init_database():
                 ,arrival_date TEXT NOT NULL DEFAULT ''
                 ,service_number TEXT NOT NULL DEFAULT ''
                 ,duration TEXT NOT NULL DEFAULT ''
+                ,departure_lat REAL
+                ,departure_lng REAL
+                ,arrival_lat REAL
+                ,arrival_lng REAL
             );
             CREATE TABLE IF NOT EXISTS edges (
                 id TEXT PRIMARY KEY,
@@ -135,8 +149,48 @@ def init_database():
         for column in ("transport_mode", "departure_place", "arrival_place", "arrival_time", "arrival_date", "service_number", "duration"):
             if column not in node_columns:
                 db.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        for column in ("departure_lat", "departure_lng", "arrival_lat", "arrival_lng"):
+            if column not in node_columns:
+                db.execute(f"ALTER TABLE nodes ADD COLUMN {column} REAL")
+        migrate_journey_routes(db)
         if count == 0:
             reset_trip(db)
+            migrate_journey_routes(db)
+
+
+def airport_coordinates(place):
+    normalized = str(place or "").strip()
+    for name, coordinates in AIRPORT_COORDINATES.items():
+        if name in normalized:
+            return coordinates
+    return None
+
+
+def migrate_journey_routes(db):
+    db.execute(
+        """UPDATE nodes SET type = 'transfer'
+        WHERE type = 'leisure' AND (title LIKE '%转机%' OR title LIKE '%中转%')"""
+    )
+    flights = db.execute(
+        """SELECT id, departure_place, arrival_place, departure_lat, departure_lng, arrival_lat, arrival_lng
+        FROM nodes WHERE type = 'transport' AND transport_mode = 'flight'"""
+    ).fetchall()
+    for flight in flights:
+        departure = airport_coordinates(flight["departure_place"])
+        arrival = airport_coordinates(flight["arrival_place"])
+        db.execute(
+            """UPDATE nodes SET
+            departure_lat = COALESCE(departure_lat, ?), departure_lng = COALESCE(departure_lng, ?),
+            arrival_lat = COALESCE(arrival_lat, ?), arrival_lng = COALESCE(arrival_lng, ?)
+            WHERE id = ?""",
+            (
+                departure[0] if departure else None,
+                departure[1] if departure else None,
+                arrival[0] if arrival else None,
+                arrival[1] if arrival else None,
+                flight["id"],
+            ),
+        )
 
 
 def reset_trip(db):
@@ -198,7 +252,8 @@ def serialize_trip(db, slug):
         for row in db.execute(
             """SELECT id, title, description, type, time, day, date, city, address, lat, lng, status,
             image_url, image_urls, transport_mode, departure_place, arrival_place, arrival_time,
-            arrival_date, service_number, duration FROM nodes WHERE trip_slug = ? ORDER BY day, time""",
+            arrival_date, service_number, duration, departure_lat, departure_lng, arrival_lat, arrival_lng
+            FROM nodes WHERE trip_slug = ? ORDER BY day, time""",
             (slug,),
         )
     ]
@@ -668,6 +723,10 @@ def node_payload(payload, existing=None):
         "arrival_date": str(source.get("arrival_date", "")).strip(),
         "service_number": str(source.get("service_number", "")).strip(),
         "duration": str(source.get("duration", "")).strip(),
+        "departure_lat": float(source["departure_lat"]) if source.get("departure_lat") not in (None, "") else None,
+        "departure_lng": float(source["departure_lng"]) if source.get("departure_lng") not in (None, "") else None,
+        "arrival_lat": float(source["arrival_lat"]) if source.get("arrival_lat") not in (None, "") else None,
+        "arrival_lng": float(source["arrival_lng"]) if source.get("arrival_lng") not in (None, "") else None,
     }
 
 
@@ -683,8 +742,9 @@ def create_node(slug):
         db.execute(
             """INSERT INTO nodes
             (id, trip_slug, title, description, type, time, day, date, city, address, lat, lng, status, image_url, image_urls,
-            transport_mode, departure_place, arrival_place, arrival_time, arrival_date, service_number, duration)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            transport_mode, departure_place, arrival_place, arrival_time, arrival_date, service_number, duration,
+            departure_lat, departure_lng, arrival_lat, arrival_lng)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (node_id, slug, *item.values()),
         )
     return jsonify(row_to_node({"id": node_id, **item})), 201
@@ -703,7 +763,8 @@ def update_node(slug, node_id):
             return jsonify({"error": str(error)}), 400
         db.execute(
             """UPDATE nodes SET title=?, description=?, type=?, time=?, day=?, date=?, city=?, address=?, lat=?, lng=?, status=?, image_url=?, image_urls=?,
-            transport_mode=?, departure_place=?, arrival_place=?, arrival_time=?, arrival_date=?, service_number=?, duration=?
+            transport_mode=?, departure_place=?, arrival_place=?, arrival_time=?, arrival_date=?, service_number=?, duration=?,
+            departure_lat=?, departure_lng=?, arrival_lat=?, arrival_lng=?
             WHERE id=? AND trip_slug=?""",
             (*item.values(), node_id, slug),
         )

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 
 const typeLabels: Record<ItineraryType, string> = {
+  transfer: '转机',
   transport: '交通',
   hotel: '住宿',
   restaurant: '餐饮',
@@ -28,6 +29,7 @@ const typeLabels: Record<ItineraryType, string> = {
 };
 
 const typeStyles: Record<ItineraryType, string> = {
+  transfer: 'bg-sky-50 text-sky-700',
   transport: 'bg-cyan-50 text-cyan-700',
   hotel: 'bg-emerald-50 text-emerald-700',
   restaurant: 'bg-rose-50 text-rose-700',

@@ -10,6 +10,7 @@ const emptyForm = (): Omit<ItineraryNode, 'id'> => ({
   city: '', address: '', lat: 64.1466, lng: -21.9426, status: 'planned', image_url: '', image_urls: [],
   transport_mode: 'flight', departure_place: '', arrival_place: '', arrival_time: '14:00',
   arrival_date: '2026-09-26', service_number: '', duration: '',
+  departure_lat: null, departure_lng: null, arrival_lat: null, arrival_lng: null,
 });
 
 export default function AdminView() {
@@ -130,6 +131,16 @@ export default function AdminView() {
               <label className="text-xs font-semibold text-slate-700">到达日期<input required type="date" value={form.arrival_date || form.date} onChange={(e) => setForm({ ...form, arrival_date: e.target.value })} className={inputClass} /></label>
               <label className="text-xs font-semibold text-slate-700">到达时间<input required type="time" value={form.arrival_time} onChange={(e) => setForm({ ...form, arrival_time: e.target.value })} className={inputClass} /></label>
               <label className="col-span-2 text-xs font-semibold text-slate-700">行程时长<input value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} placeholder="例如：3 小时 20 分" className={inputClass} /></label>
+              <div className="col-span-2 grid gap-3 xl:grid-cols-2">
+                <div>
+                  <div className="mb-1.5 text-xs font-bold text-sky-800">出发机场位置</div>
+                  <LocationPicker compact value={{ lat: form.departure_lat ?? form.lat, lng: form.departure_lng ?? form.lng, title: form.departure_place }} onChange={(location) => setForm((current) => ({ ...current, departure_place: location.title || current.departure_place, departure_lat: location.lat, departure_lng: location.lng }))} />
+                </div>
+                <div>
+                  <div className="mb-1.5 text-xs font-bold text-indigo-800">到达机场位置</div>
+                  <LocationPicker compact value={{ lat: form.arrival_lat ?? form.lat, lng: form.arrival_lng ?? form.lng, title: form.arrival_place }} onChange={(location) => setForm((current) => ({ ...current, arrival_place: location.title || current.arrival_place, arrival_lat: location.lat, arrival_lng: location.lng, lat: location.lat, lng: location.lng }))} />
+                </div>
+              </div>
             </div>
           ) : (
             <LocationPicker value={{ lat: form.lat, lng: form.lng, city: form.city, address: form.address, title: form.title }} onChange={(location) => setForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, title: current.title || location.title || '' }))} />
@@ -139,7 +150,7 @@ export default function AdminView() {
             <label className="text-xs font-semibold text-slate-700">日期<input required type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value, arrival_date: form.arrival_date || e.target.value })} className={inputClass} /></label>
             <label className="text-xs font-semibold text-slate-700">{form.type === 'transport' ? '出发时间' : '时间'}<input required type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} className={inputClass} /></label>
             <label className="text-xs font-semibold text-slate-700">Day<input required min="1" type="number" value={form.day} onChange={(e) => setForm({ ...form, day: Number(e.target.value) })} className={inputClass} /></label>
-            {form.type !== 'transport' && <label className="text-xs font-semibold text-slate-700">类型<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as ItineraryType })} className={inputClass}><option value="sightseeing">景点</option><option value="hotel">住宿</option><option value="restaurant">餐饮</option><option value="leisure">休闲</option><option value="shopping">采购</option></select></label>}
+            {form.type !== 'transport' && <label className="text-xs font-semibold text-slate-700">类型<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as ItineraryType })} className={inputClass}><option value="sightseeing">景点</option><option value="transfer">转机</option><option value="hotel">住宿</option><option value="restaurant">餐饮</option><option value="leisure">休闲</option><option value="shopping">采购</option></select></label>}
           </div>
 
           {form.type !== 'transport' && <div tabIndex={0} onPaste={pasteImage} className="rounded-2xl border border-dashed border-indigo-200 bg-indigo-50/40 p-3 outline-none focus:border-indigo-400">

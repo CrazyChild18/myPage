@@ -24,6 +24,7 @@ interface SearchResult {
 interface LocationPickerProps {
   value: LocationValue;
   onChange: (value: LocationValue) => void;
+  compact?: boolean;
 }
 
 const searchCache = new Map<string, SearchResult[]>();
@@ -45,7 +46,7 @@ function ClickPicker({ onPick }: { onPick: (lat: number, lng: number) => void })
   return null;
 }
 
-export default function LocationPicker({ value, onChange }: LocationPickerProps) {
+export default function LocationPicker({ value, onChange, compact = false }: LocationPickerProps) {
   const [provider, setProvider] = useState<LocationProvider>(() => (isInChina(value.lat, value.lng) ? 'amap' : 'osm'));
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -206,14 +207,14 @@ export default function LocationPicker({ value, onChange }: LocationPickerProps)
       )}
       {error && <p className="text-[10px] text-amber-700">{error}</p>}
 
-      <div className="h-48 overflow-hidden rounded-xl border border-white shadow-inner">
+      {!compact && <div className="h-48 overflow-hidden rounded-xl border border-white shadow-inner">
         <MapContainer center={[value.lat, value.lng]} zoom={12} zoomControl={false} className="h-full w-full">
           <TileLayer attribution='&copy; <a href="https://carto.com/">CARTO</a>' url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" />
           <MapController value={value} />
           <ClickPicker onPick={(lat, lng) => void pickOnMap(lat, lng)} />
           <CircleMarker center={[value.lat, value.lng]} radius={9} pathOptions={{ color: '#fff', weight: 3, fillColor: '#4f46e5', fillOpacity: 1 }} />
         </MapContainer>
-      </div>
+      </div>}
 
       <div className="flex items-start gap-2 rounded-xl bg-white/75 p-2.5">
         {resolving ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-indigo-500" /> : <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />}
