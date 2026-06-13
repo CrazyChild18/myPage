@@ -205,8 +205,8 @@ export default function MapView() {
 
   // Filter edges where both end-nodes are currently visible/valid
   const visibleEdges = edges.filter(edge => {
-    const srcExists = visibleNodes.some(n => n.id === edge.source);
-    const tarExists = visibleNodes.some(n => n.id === edge.target);
+    const srcExists = visibleNodes.some(n => n.id === edge.source && n.type !== 'transfer');
+    const tarExists = visibleNodes.some(n => n.id === edge.target && n.type !== 'transfer');
     return srcExists && tarExists;
   });
 

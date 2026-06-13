@@ -171,6 +171,10 @@ def migrate_journey_routes(db):
         """UPDATE nodes SET type = 'transfer'
         WHERE type = 'leisure' AND (title LIKE '%转机%' OR title LIKE '%中转%')"""
     )
+    db.execute(
+        """DELETE FROM edges WHERE source IN (SELECT id FROM nodes WHERE type = 'transfer')
+        OR target IN (SELECT id FROM nodes WHERE type = 'transfer')"""
+    )
     flights = db.execute(
         """SELECT id, departure_place, arrival_place, departure_lat, departure_lng, arrival_lat, arrival_lng
         FROM nodes WHERE type = 'transport' AND transport_mode = 'flight'"""
@@ -781,7 +785,7 @@ def delete_node(slug, node_id):
 @app.post("/api/trips/<slug>/auto-connect")
 def auto_connect(slug):
     with connection() as db:
-        nodes = list(db.execute("SELECT id, day, lat, lng FROM nodes WHERE trip_slug = ? AND type != 'transport' ORDER BY day, time", (slug,)))
+        nodes = list(db.execute("SELECT id, day, lat, lng FROM nodes WHERE trip_slug = ? AND type NOT IN ('transport', 'transfer') ORDER BY day, time", (slug,)))
         db.execute("DELETE FROM edges WHERE trip_slug = ?", (slug,))
         generated = []
         for index, current in enumerate(nodes[:-1]):
