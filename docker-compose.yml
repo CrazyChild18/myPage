@@ -1,0 +1,12 @@
+services:
+  voyageplanner:
+    build: .
+    container_name: voyageplanner
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:25565:8080"
+    volumes:
+      - voyageplanner-data:/data
+
+volumes:
+  voyageplanner-data:

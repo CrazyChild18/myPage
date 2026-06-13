@@ -1,0 +1,6 @@
+{
+  "name": "VoyagePlanner",
+  "description": "A deployable Iceland travel planner with a Flask API, SQLite persistence, interactive Leaflet maps, itinerary editing, and image previews.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
