@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { useItineraryStore } from '../../store/useItineraryStore';
@@ -124,12 +124,14 @@ function MapNavController({ activeNode }: { activeNode: ItineraryNode | null }) 
 // Fit-Bounds helper to encompass active items automatically
 function FitBoundsController({ nodes, activeDay }: { nodes: ItineraryNode[]; activeDay: string | number }) {
   const map = useMap();
+  const lastFittedDay = useRef<string | number | null>(null);
 
   useEffect(() => {
-    if (nodes && nodes.length > 0) {
-      const bounds = L.latLngBounds(nodes.map(n => [n.lat, n.lng]));
-      map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
-    }
+    if (nodes.length === 0 || lastFittedDay.current === activeDay) return;
+
+    const bounds = L.latLngBounds(nodes.map(n => [n.lat, n.lng]));
+    map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
+    lastFittedDay.current = activeDay;
   }, [activeDay, map, nodes]);
 
   return null;
