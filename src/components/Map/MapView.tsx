@@ -149,6 +149,22 @@ function MapNavController({ activeNode }: { activeNode: ItineraryNode | null }) 
 
   useEffect(() => {
     if (activeNode) {
+      if (
+        activeNode.type === 'transport' &&
+        activeNode.departure_lat != null &&
+        activeNode.departure_lng != null &&
+        activeNode.arrival_lat != null &&
+        activeNode.arrival_lng != null
+      ) {
+        map.fitBounds(
+          L.latLngBounds([
+            [activeNode.departure_lat, activeNode.departure_lng],
+            [activeNode.arrival_lat, activeNode.arrival_lng],
+          ]),
+          { animate: true, duration: 0.8, padding: [70, 70], maxZoom: 9 },
+        );
+        return;
+      }
       map.flyTo([activeNode.lat, activeNode.lng], 14, {
         animate: true,
         duration: 1.2
@@ -222,7 +238,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     ]),
   ];
 
-  const activeNode = nodes.find(n => n.id === activeNodeId && n.type !== 'transport') || null;
+  const activeNode = nodes.find(n => n.id === activeNodeId) || null;
 
   // Filter edges where both end-nodes are currently visible/valid
   const visibleEdges = edges.filter(edge => {
