@@ -19,6 +19,7 @@ export default defineConfig(() => {
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
       proxy: {
         '/api': 'http://127.0.0.1:8080',
+        '/uploads': 'http://127.0.0.1:8080',
       },
     },
   };

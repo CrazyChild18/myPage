@@ -1,10 +1,8 @@
 import { create } from 'zustand';
 import { ItineraryEdge, ItineraryNode, Trip, TripResponse } from '../types';
 
-const TRIP_SLUG = 'iceland-2026';
-const API_ROOT = `/api/trips/${TRIP_SLUG}`;
-
 interface ItineraryState {
+  selectedTripSlug: string | null;
   trip: Trip | null;
   nodes: ItineraryNode[];
   edges: ItineraryEdge[];
@@ -15,7 +13,8 @@ interface ItineraryState {
   saving: boolean;
   error: string | null;
 
-  loadTrip: () => Promise<void>;
+  loadTrip: (slug: string) => Promise<void>;
+  clearTrip: () => void;
   resetTrip: () => Promise<void>;
   addNode: (node: ItineraryNode) => Promise<void>;
   updateNode: (id: string, updatedFields: Partial<ItineraryNode>) => Promise<void>;
@@ -42,40 +41,56 @@ const request = async <T>(url: string, options?: RequestInit): Promise<T> => {
 };
 
 const applyTrip = (data: TripResponse) => ({
+  selectedTripSlug: data.slug,
   trip: tripOnly(data),
   nodes: data.nodes,
   edges: data.edges,
   activeNodeId: data.nodes[0]?.id || null,
-  activeDay: data.nodes[0]?.day || 1,
+  activeDay: 'all' as const,
   loading: false,
   saving: false,
   error: null,
 });
 
 export const useItineraryStore = create<ItineraryState>((set, get) => ({
+  selectedTripSlug: null,
   trip: null,
   nodes: [],
   edges: [],
   activeNodeId: null,
   hoveredEdgeId: null,
-  activeDay: 1,
-  loading: true,
+  activeDay: 'all',
+  loading: false,
   saving: false,
   error: null,
 
-  loadTrip: async () => {
+  loadTrip: async (slug) => {
     set({ loading: true, error: null });
     try {
-      set(applyTrip(await request<TripResponse>(API_ROOT)));
+      set(applyTrip(await request<TripResponse>(`/api/trips/${slug}`)));
     } catch (error) {
       set({ loading: false, error: error instanceof Error ? error.message : '加载行程失败' });
     }
   },
 
+  clearTrip: () => set({
+    selectedTripSlug: null,
+    trip: null,
+    nodes: [],
+    edges: [],
+    activeNodeId: null,
+    activeDay: 'all',
+    loading: false,
+    saving: false,
+    error: null,
+  }),
+
   resetTrip: async () => {
+    const slug = get().selectedTripSlug;
+    if (!slug) return;
     set({ saving: true, error: null });
     try {
-      set(applyTrip(await request<TripResponse>(`${API_ROOT}/reset`, { method: 'POST' })));
+      set(applyTrip(await request<TripResponse>(`/api/trips/${slug}/reset`, { method: 'POST' })));
     } catch (error) {
       set({ saving: false, error: error instanceof Error ? error.message : '重置行程失败' });
       throw error;
@@ -83,9 +98,11 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
   },
 
   addNode: async (node) => {
+    const slug = get().selectedTripSlug;
+    if (!slug) return;
     set({ saving: true, error: null });
     try {
-      const created = await request<ItineraryNode>(`${API_ROOT}/nodes`, {
+      const created = await request<ItineraryNode>(`/api/trips/${slug}/nodes`, {
         method: 'POST',
         body: JSON.stringify(node),
       });
@@ -101,6 +118,8 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
   },
 
   updateNode: async (id, updatedFields) => {
+    const slug = get().selectedTripSlug;
+    if (!slug) return;
     const current = get().nodes.find((node) => node.id === id);
     if (!current) return;
     const optimistic = { ...current, ...updatedFields };
@@ -111,7 +130,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
       error: null,
     }));
     try {
-      const updated = await request<ItineraryNode>(`${API_ROOT}/nodes/${id}`, {
+      const updated = await request<ItineraryNode>(`/api/trips/${slug}/nodes/${id}`, {
         method: 'PUT',
         body: JSON.stringify(updatedFields),
       });
@@ -131,9 +150,11 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
   },
 
   deleteNode: async (id) => {
+    const slug = get().selectedTripSlug;
+    if (!slug) return;
     set({ saving: true, error: null });
     try {
-      await request<void>(`${API_ROOT}/nodes/${id}`, { method: 'DELETE' });
+      await request<void>(`/api/trips/${slug}/nodes/${id}`, { method: 'DELETE' });
       set((state) => {
         const nodes = state.nodes.filter((node) => node.id !== id);
         return {
@@ -157,9 +178,11 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
   }),
 
   autoConnectEdges: async () => {
+    const slug = get().selectedTripSlug;
+    if (!slug) return;
     set({ saving: true, error: null });
     try {
-      const data = await request<TripResponse>(`${API_ROOT}/auto-connect`, { method: 'POST' });
+      const data = await request<TripResponse>(`/api/trips/${slug}/auto-connect`, { method: 'POST' });
       set({ edges: data.edges, saving: false });
     } catch (error) {
       set({ saving: false, error: error instanceof Error ? error.message : '重建路线失败' });

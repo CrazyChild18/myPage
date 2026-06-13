@@ -1,1 +1,65 @@
 @import "tailwindcss";
+
+.leaflet-container {
+  font-family: inherit;
+  background: #020617;
+}
+
+.leaflet-control-attribution {
+  border-radius: 8px 0 0 0;
+  background: rgb(2 6 23 / 55%) !important;
+  color: rgb(148 163 184) !important;
+  backdrop-filter: blur(8px);
+}
+
+.leaflet-control-attribution a {
+  color: rgb(165 180 252) !important;
+}
+
+.leaflet-tooltip {
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 10px;
+  background: rgb(2 6 23 / 82%);
+  color: white;
+  box-shadow: 0 12px 28px rgb(2 6 23 / 35%);
+  backdrop-filter: blur(12px);
+}
+
+.leaflet-tooltip-top::before {
+  border-top-color: rgb(2 6 23 / 82%);
+}
+
+@page {
+  size: A4 portrait;
+  margin: 10mm 9mm 10mm;
+}
+
+@media print {
+  html,
+  body {
+    background: white !important;
+    color: #0f172a !important;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+  }
+
+  .visa-itinerary {
+    width: 100%;
+    font-size: 9px;
+  }
+
+  .visa-cover {
+    break-after: avoid;
+  }
+
+  .day-sheet {
+    page-break-inside: avoid;
+  }
+
+  .itinerary-row {
+    page-break-inside: avoid;
+  }
+
+  .image-strip .image-thumb:not(:first-child) {
+    display: none;
+  }
+}

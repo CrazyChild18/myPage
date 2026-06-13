@@ -2,19 +2,54 @@ import json
 import math
 import os
 import sqlite3
+import time
+import uuid
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.utils import secure_filename
 
 from backend.seed_data import EDGES, NODES, TRIP
 
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
+
+
+def load_local_env():
+    env_file = PROJECT_DIR / ".env"
+    if not env_file.exists():
+        return
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+load_local_env()
+
 DIST_DIR = PROJECT_DIR / "dist"
 DATABASE = Path(os.environ.get("DATABASE_PATH", BASE_DIR / "voyageplanner.db"))
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", DATABASE.parent / "uploads"))
+AMAP_WEB_SERVICE_KEY = os.environ.get("AMAP_WEB_SERVICE_KEY", "")
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+GEOCODE_CACHE_TTL = 24 * 60 * 60
+REVERSE_CACHE_TTL = 7 * 24 * 60 * 60
+GEOCODE_CACHE = {}
 
 app = Flask(__name__, static_folder=str(DIST_DIR), static_url_path="")
+app.config["MAX_CONTENT_LENGTH"] = MAX_IMAGE_BYTES
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def image_too_large(_error):
+    return jsonify({"error": "图片不能超过 10 MB"}), 413
 
 
 def connection():
@@ -52,10 +87,19 @@ def init_database():
                 day INTEGER NOT NULL,
                 date TEXT NOT NULL,
                 city TEXT NOT NULL DEFAULT '',
+                address TEXT NOT NULL DEFAULT '',
                 lat REAL NOT NULL,
                 lng REAL NOT NULL,
                 status TEXT NOT NULL DEFAULT 'planned'
                 ,image_url TEXT NOT NULL DEFAULT ''
+                ,image_urls TEXT NOT NULL DEFAULT '[]'
+                ,transport_mode TEXT NOT NULL DEFAULT ''
+                ,departure_place TEXT NOT NULL DEFAULT ''
+                ,arrival_place TEXT NOT NULL DEFAULT ''
+                ,arrival_time TEXT NOT NULL DEFAULT ''
+                ,arrival_date TEXT NOT NULL DEFAULT ''
+                ,service_number TEXT NOT NULL DEFAULT ''
+                ,duration TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS edges (
                 id TEXT PRIMARY KEY,
@@ -66,6 +110,11 @@ def init_database():
                 duration TEXT,
                 distance TEXT
             );
+            CREATE TABLE IF NOT EXISTS geocode_cache (
+                cache_key TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                expires_at REAL NOT NULL
+            );
             """
         )
         count = db.execute("SELECT COUNT(*) FROM trips").fetchone()[0]
@@ -75,6 +124,16 @@ def init_database():
             db.execute("ALTER TABLE trips ADD COLUMN car_image_url TEXT NOT NULL DEFAULT ''")
         if "image_url" not in node_columns:
             db.execute("ALTER TABLE nodes ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
+        if "image_urls" not in node_columns:
+            db.execute("ALTER TABLE nodes ADD COLUMN image_urls TEXT NOT NULL DEFAULT '[]'")
+            db.execute(
+                "UPDATE nodes SET image_urls = json_array(image_url) WHERE image_url != ''"
+            )
+        if "address" not in node_columns:
+            db.execute("ALTER TABLE nodes ADD COLUMN address TEXT NOT NULL DEFAULT ''")
+        for column in ("transport_mode", "departure_place", "arrival_place", "arrival_time", "arrival_date", "service_number", "duration"):
+            if column not in node_columns:
+                db.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         if count == 0:
             reset_trip(db)
 
@@ -93,9 +152,17 @@ def reset_trip(db):
     )
     db.executemany(
         """INSERT INTO nodes
-        (id, trip_slug, title, description, type, time, day, date, city, lat, lng, status, image_url)
-        VALUES (:id, :trip_slug, :title, :description, :type, :time, :day, :date, :city, :lat, :lng, :status, :image_url)""",
-        [{**item, "trip_slug": TRIP["slug"]} for item in NODES],
+        (id, trip_slug, title, description, type, time, day, date, city, address, lat, lng, status, image_url, image_urls)
+        VALUES (:id, :trip_slug, :title, :description, :type, :time, :day, :date, :city, :address, :lat, :lng, :status, :image_url, :image_urls)""",
+        [
+            {
+                **item,
+                "trip_slug": TRIP["slug"],
+                "address": "",
+                "image_urls": json.dumps([item["image_url"]] if item.get("image_url") else []),
+            }
+            for item in NODES
+        ],
     )
     db.executemany(
         """INSERT INTO edges
@@ -106,7 +173,11 @@ def reset_trip(db):
 
 
 def row_to_node(row):
-    return dict(row)
+    item = dict(row)
+    item["image_urls"] = json.loads(item.get("image_urls") or "[]")
+    if not item["image_urls"] and item.get("image_url"):
+        item["image_urls"] = [item["image_url"]]
+    return item
 
 
 def row_to_edge(row):
@@ -124,7 +195,9 @@ def serialize_trip(db, slug):
     result["nodes"] = [
         row_to_node(row)
         for row in db.execute(
-            "SELECT id, title, description, type, time, day, date, city, lat, lng, status, image_url FROM nodes WHERE trip_slug = ? ORDER BY day, time",
+            """SELECT id, title, description, type, time, day, date, city, address, lat, lng, status,
+            image_url, image_urls, transport_mode, departure_place, arrival_place, arrival_time,
+            arrival_date, service_number, duration FROM nodes WHERE trip_slug = ? ORDER BY day, time""",
             (slug,),
         )
     ]
@@ -146,8 +219,62 @@ def health():
 @app.get("/api/trips")
 def list_trips():
     with connection() as db:
-        trips = [dict(row) for row in db.execute("SELECT slug, title, subtitle, start_date, end_date FROM trips")]
+        trips = []
+        for row in db.execute("SELECT * FROM trips ORDER BY start_date DESC"):
+            trip = dict(row)
+            trip["accommodations"] = json.loads(trip["accommodations"])
+            nodes = list(
+                db.execute(
+                    """SELECT title, city, day, lat, lng, image_url, type
+                    FROM nodes WHERE trip_slug = ? ORDER BY day, time""",
+                    (trip["slug"],),
+                )
+            )
+            map_nodes = [node for node in nodes if node["type"] != "transport"] or nodes
+            cover_node = next((node for node in map_nodes if node["image_url"]), None)
+            trip.update(
+                {
+                    "node_count": len(nodes),
+                    "day_count": max((node["day"] for node in nodes), default=0),
+                    "center_lat": sum(node["lat"] for node in map_nodes) / len(map_nodes) if map_nodes else 0,
+                    "center_lng": sum(node["lng"] for node in map_nodes) / len(map_nodes) if map_nodes else 0,
+                    "cover_image_url": cover_node["image_url"] if cover_node else trip["car_image_url"],
+                    "cities": list(dict.fromkeys(node["city"] for node in nodes if node["city"]))[:5],
+                }
+            )
+            trips.append(trip)
     return jsonify(trips)
+
+
+@app.post("/api/trips")
+def create_trip():
+    payload = request.get_json(force=True)
+    title = str(payload.get("title", "")).strip()
+    start_date = str(payload.get("start_date", "")).strip()
+    end_date = str(payload.get("end_date", "")).strip()
+    if not title or not start_date or not end_date:
+        return jsonify({"error": "请填写旅行名称、开始日期和结束日期"}), 400
+    slug_base = "".join(char.lower() if char.isalnum() else "-" for char in title).strip("-") or "trip"
+    slug = f"{slug_base}-{uuid.uuid4().hex[:6]}"
+    with connection() as db:
+        db.execute(
+            """INSERT INTO trips
+            (slug, title, subtitle, start_date, end_date, travelers, origin, summary, car, car_image_url, accommodations)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '[]')""",
+            (
+                slug,
+                title,
+                str(payload.get("subtitle", "")).strip() or "新的旅行计划",
+                start_date,
+                end_date,
+                max(1, int(payload.get("travelers", 1))),
+                str(payload.get("origin", "")).strip(),
+                str(payload.get("summary", "")).strip() or "这段旅行正在规划中。",
+                str(payload.get("car", "")).strip() or "待补充",
+            ),
+        )
+        trip = serialize_trip(db, slug)
+    return jsonify(trip), 201
 
 
 @app.get("/api/trips/<slug>")
@@ -157,11 +284,310 @@ def get_trip(slug):
     return jsonify(trip) if trip else (jsonify({"error": "Trip not found"}), 404)
 
 
+def nominatim_request(path, params):
+    url = f"https://nominatim.openstreetmap.org/{path}?{urlencode(params)}"
+    req = Request(url, headers={"User-Agent": "VoyagePlanner/1.0 (personal travel planner)"})
+    with urlopen(req, timeout=8) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+@app.get("/api/geocode/search-legacy")
+def geocode_search():
+    query = request.args.get("q", "").strip()
+    if not query:
+        return jsonify([])
+    try:
+        results = nominatim_request(
+            "search",
+            {"q": query, "format": "jsonv2", "addressdetails": 1, "limit": 6, "accept-language": "zh-CN,en"},
+        )
+    except Exception:
+        return jsonify({"error": "地点搜索服务暂时不可用"}), 502
+    return jsonify(
+        [
+            {
+                "name": item.get("name") or item["display_name"].split(",")[0],
+                "display_name": item["display_name"],
+                "lat": float(item["lat"]),
+                "lng": float(item["lon"]),
+                "city": next(
+                    (
+                        item.get("address", {}).get(key)
+                        for key in ("city", "town", "village", "municipality", "county", "state")
+                        if item.get("address", {}).get(key)
+                    ),
+                    "",
+                ),
+            }
+            for item in results
+        ]
+    )
+
+
+@app.get("/api/geocode/reverse-legacy")
+def geocode_reverse():
+    try:
+        lat = float(request.args["lat"])
+        lng = float(request.args["lng"])
+        item = nominatim_request(
+            "reverse",
+            {"lat": lat, "lon": lng, "format": "jsonv2", "addressdetails": 1, "accept-language": "zh-CN,en"},
+        )
+    except (KeyError, ValueError):
+        return jsonify({"error": "无效坐标"}), 400
+    except Exception:
+        return jsonify({"error": "地址查询服务暂时不可用"}), 502
+    address = item.get("address", {})
+    city = next((address.get(key) for key in ("city", "town", "village", "municipality", "county", "state") if address.get(key)), "")
+    return jsonify({"display_name": item.get("display_name", ""), "city": city})
+
+
+def cached_geocode(key, ttl, loader):
+    serialized_key = json.dumps(key, ensure_ascii=False, separators=(",", ":"))
+    cached = GEOCODE_CACHE.get(key)
+    if cached and time.monotonic() - cached[0] < ttl:
+        return cached[1]
+
+    with connection() as db:
+        stored = db.execute(
+            "SELECT payload FROM geocode_cache WHERE cache_key = ? AND expires_at > ?",
+            (serialized_key, time.time()),
+        ).fetchone()
+    if stored:
+        value = json.loads(stored["payload"])
+        GEOCODE_CACHE[key] = (time.monotonic(), value)
+        return value
+
+    value = loader()
+    if len(GEOCODE_CACHE) >= 500:
+        GEOCODE_CACHE.pop(next(iter(GEOCODE_CACHE)))
+    GEOCODE_CACHE[key] = (time.monotonic(), value)
+    with connection() as db:
+        db.execute(
+            """INSERT INTO geocode_cache (cache_key, payload, expires_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload, expires_at=excluded.expires_at""",
+            (serialized_key, json.dumps(value, ensure_ascii=False), time.time() + ttl),
+        )
+    return value
+
+
+def json_request(url, params, headers=None):
+    req = Request(
+        f"{url}?{urlencode(params)}",
+        headers=headers or {"User-Agent": "VoyagePlanner/1.0 (personal travel planner)"},
+    )
+    with urlopen(req, timeout=8) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def amap_request(path, params):
+    if not AMAP_WEB_SERVICE_KEY:
+        raise RuntimeError("AMAP_WEB_SERVICE_KEY is not configured")
+    result = json_request(
+        f"https://restapi.amap.com/v3/{path}",
+        {**params, "key": AMAP_WEB_SERVICE_KEY},
+    )
+    if result.get("status") != "1":
+        raise RuntimeError(result.get("info") or "Amap request failed")
+    return result
+
+
+def outside_china(lat, lng):
+    return not (72.004 <= lng <= 137.8347 and 0.8293 <= lat <= 55.8271)
+
+
+def coordinate_delta(lat, lng):
+    x = lng - 105.0
+    y = lat - 35.0
+    lat_delta = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * math.sqrt(abs(x))
+    lat_delta += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    lat_delta += (20.0 * math.sin(y * math.pi) + 40.0 * math.sin(y / 3.0 * math.pi)) * 2.0 / 3.0
+    lat_delta += (160.0 * math.sin(y / 12.0 * math.pi) + 320 * math.sin(y * math.pi / 30.0)) * 2.0 / 3.0
+    lng_delta = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * math.sqrt(abs(x))
+    lng_delta += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    lng_delta += (20.0 * math.sin(x * math.pi) + 40.0 * math.sin(x / 3.0 * math.pi)) * 2.0 / 3.0
+    lng_delta += (150.0 * math.sin(x / 12.0 * math.pi) + 300.0 * math.sin(x / 30.0 * math.pi)) * 2.0 / 3.0
+    rad_lat = lat / 180.0 * math.pi
+    magic = 1 - 0.00669342162296594323 * math.sin(rad_lat) ** 2
+    sqrt_magic = math.sqrt(magic)
+    lat_delta = (lat_delta * 180.0) / ((6335552.717000426 / (magic * sqrt_magic)) * math.pi)
+    lng_delta = (lng_delta * 180.0) / ((6378245.0 / sqrt_magic) * math.cos(rad_lat) * math.pi)
+    return lat_delta, lng_delta
+
+
+def wgs84_to_gcj02(lat, lng):
+    if outside_china(lat, lng):
+        return lat, lng
+    lat_delta, lng_delta = coordinate_delta(lat, lng)
+    return lat + lat_delta, lng + lng_delta
+
+
+def gcj02_to_wgs84(lat, lng):
+    if outside_china(lat, lng):
+        return lat, lng
+    converted_lat, converted_lng = wgs84_to_gcj02(lat, lng)
+    return lat * 2 - converted_lat, lng * 2 - converted_lng
+
+
+def amap_text(value):
+    return value if isinstance(value, str) else ""
+
+
+@app.get("/api/geocode/search")
+def hybrid_geocode_search():
+    query = request.args.get("q", "").strip()
+    provider = request.args.get("provider", "osm").strip().lower()
+    if len(query) < 2:
+        return jsonify([])
+    try:
+        if provider == "amap":
+            results = cached_geocode(
+                ("search", "amap", query.casefold()),
+                GEOCODE_CACHE_TTL,
+                lambda: amap_request(
+                    "place/text",
+                    {"keywords": query, "offset": 6, "page": 1, "extensions": "base"},
+                ).get("pois", []),
+            )
+            payload = []
+            for item in results:
+                location = amap_text(item.get("location"))
+                if not location or "," not in location:
+                    continue
+                lng, lat = (float(part) for part in location.split(",", 1))
+                lat, lng = gcj02_to_wgs84(lat, lng)
+                city = amap_text(item.get("cityname")) or amap_text(item.get("pname"))
+                address = amap_text(item.get("address"))
+                payload.append(
+                    {
+                        "name": amap_text(item.get("name")),
+                        "display_name": " · ".join(part for part in (city, address) if part),
+                        "lat": lat,
+                        "lng": lng,
+                        "city": city,
+                        "provider": "amap",
+                    }
+                )
+            return jsonify(payload)
+
+        results = cached_geocode(
+            ("search", "osm", query.casefold()),
+            GEOCODE_CACHE_TTL,
+            lambda: nominatim_request(
+                "search",
+                {"q": query, "format": "jsonv2", "addressdetails": 1, "limit": 6, "accept-language": "zh-CN,en"},
+            ),
+        )
+    except Exception:
+        return jsonify({"error": "地点搜索服务暂时不可用"}), 502
+    return jsonify(
+        [
+            {
+                "name": item.get("name") or item["display_name"].split(",")[0],
+                "display_name": item["display_name"],
+                "lat": float(item["lat"]),
+                "lng": float(item["lon"]),
+                "city": next(
+                    (
+                        item.get("address", {}).get(key)
+                        for key in ("city", "town", "village", "municipality", "county", "state")
+                        if item.get("address", {}).get(key)
+                    ),
+                    "",
+                ),
+                "provider": "osm",
+            }
+            for item in results
+        ]
+    )
+
+
+@app.get("/api/geocode/reverse")
+def hybrid_geocode_reverse():
+    try:
+        lat = float(request.args["lat"])
+        lng = float(request.args["lng"])
+        provider = request.args.get("provider", "osm").strip().lower()
+        cache_key = ("reverse", provider, round(lat, 4), round(lng, 4))
+        if provider == "amap":
+            gcj_lat, gcj_lng = wgs84_to_gcj02(lat, lng)
+            item = cached_geocode(
+                cache_key,
+                REVERSE_CACHE_TTL,
+                lambda: amap_request(
+                    "geocode/regeo",
+                    {"location": f"{gcj_lng},{gcj_lat}", "extensions": "base"},
+                ).get("regeocode", {}),
+            )
+            component = item.get("addressComponent", {})
+            city = amap_text(component.get("city")) or amap_text(component.get("province"))
+            return jsonify(
+                {
+                    "display_name": amap_text(item.get("formatted_address")),
+                    "city": city,
+                    "provider": "amap",
+                }
+            )
+
+        item = cached_geocode(
+            cache_key,
+            REVERSE_CACHE_TTL,
+            lambda: nominatim_request(
+                "reverse",
+                {"lat": lat, "lon": lng, "format": "jsonv2", "addressdetails": 1, "accept-language": "zh-CN,en"},
+            ),
+        )
+    except (KeyError, ValueError):
+        return jsonify({"error": "无效坐标"}), 400
+    except Exception:
+        return jsonify({"error": "地址查询服务暂时不可用"}), 502
+    address = item.get("address", {})
+    city = next((address.get(key) for key in ("city", "town", "village", "municipality", "county", "state") if address.get(key)), "")
+    return jsonify({"display_name": item.get("display_name", ""), "city": city, "provider": "osm"})
+
+
+@app.post("/api/trips/<slug>/images")
+def upload_trip_image(slug):
+    with connection() as db:
+        if not db.execute("SELECT 1 FROM trips WHERE slug = ?", (slug,)).fetchone():
+            return jsonify({"error": "Trip not found"}), 404
+
+    image = request.files.get("image")
+    if not image or not image.filename:
+        return jsonify({"error": "请选择图片文件"}), 400
+
+    extension = Path(secure_filename(image.filename)).suffix.lower()
+    if extension not in ALLOWED_IMAGE_EXTENSIONS:
+        return jsonify({"error": "仅支持 JPG、PNG、WebP 或 GIF 图片"}), 400
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{slug}-{uuid.uuid4().hex}{extension}"
+    image.save(UPLOAD_DIR / filename)
+    return jsonify({"url": f"/uploads/{filename}"}), 201
+
+
+@app.get("/uploads/<path:filename>")
+def uploaded_image(filename):
+    return send_from_directory(UPLOAD_DIR, filename)
+
+
 def node_payload(payload, existing=None):
     source = {**(dict(existing) if existing else {}), **payload}
     required = ("title", "type", "time", "day", "date", "lat", "lng", "status")
     if any(source.get(key) in (None, "") for key in required):
         raise ValueError("Missing required node fields")
+    image_urls = source.get("image_urls")
+    if isinstance(image_urls, str):
+        try:
+            image_urls = json.loads(image_urls)
+        except json.JSONDecodeError:
+            image_urls = [image_urls]
+    image_urls = [str(url).strip() for url in (image_urls or []) if str(url).strip()]
+    legacy_image = str(source.get("image_url", "")).strip()
+    if legacy_image and legacy_image not in image_urls:
+        image_urls.insert(0, legacy_image)
+
     return {
         "title": str(source["title"]).strip(),
         "description": str(source.get("description", "")).strip(),
@@ -170,10 +596,19 @@ def node_payload(payload, existing=None):
         "day": int(source["day"]),
         "date": source["date"],
         "city": str(source.get("city", "")).strip(),
+        "address": str(source.get("address", "")).strip(),
         "lat": float(source["lat"]),
         "lng": float(source["lng"]),
         "status": source["status"],
-        "image_url": str(source.get("image_url", "")).strip(),
+        "image_url": image_urls[0] if image_urls else "",
+        "image_urls": json.dumps(image_urls, ensure_ascii=False),
+        "transport_mode": str(source.get("transport_mode", "")).strip(),
+        "departure_place": str(source.get("departure_place", "")).strip(),
+        "arrival_place": str(source.get("arrival_place", "")).strip(),
+        "arrival_time": str(source.get("arrival_time", "")).strip(),
+        "arrival_date": str(source.get("arrival_date", "")).strip(),
+        "service_number": str(source.get("service_number", "")).strip(),
+        "duration": str(source.get("duration", "")).strip(),
     }
 
 
@@ -188,11 +623,12 @@ def create_node(slug):
     with connection() as db:
         db.execute(
             """INSERT INTO nodes
-            (id, trip_slug, title, description, type, time, day, date, city, lat, lng, status, image_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (id, trip_slug, title, description, type, time, day, date, city, address, lat, lng, status, image_url, image_urls,
+            transport_mode, departure_place, arrival_place, arrival_time, arrival_date, service_number, duration)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (node_id, slug, *item.values()),
         )
-    return jsonify({"id": node_id, **item}), 201
+    return jsonify(row_to_node({"id": node_id, **item})), 201
 
 
 @app.put("/api/trips/<slug>/nodes/<node_id>")
@@ -207,11 +643,12 @@ def update_node(slug, node_id):
         except (ValueError, TypeError) as error:
             return jsonify({"error": str(error)}), 400
         db.execute(
-            """UPDATE nodes SET title=?, description=?, type=?, time=?, day=?, date=?, city=?, lat=?, lng=?, status=?, image_url=?
+            """UPDATE nodes SET title=?, description=?, type=?, time=?, day=?, date=?, city=?, address=?, lat=?, lng=?, status=?, image_url=?, image_urls=?,
+            transport_mode=?, departure_place=?, arrival_place=?, arrival_time=?, arrival_date=?, service_number=?, duration=?
             WHERE id=? AND trip_slug=?""",
             (*item.values(), node_id, slug),
         )
-    return jsonify({"id": node_id, **item})
+    return jsonify(row_to_node({"id": node_id, **item}))
 
 
 @app.delete("/api/trips/<slug>/nodes/<node_id>")
@@ -224,7 +661,7 @@ def delete_node(slug, node_id):
 @app.post("/api/trips/<slug>/auto-connect")
 def auto_connect(slug):
     with connection() as db:
-        nodes = list(db.execute("SELECT id, day, lat, lng FROM nodes WHERE trip_slug = ? ORDER BY day, time", (slug,)))
+        nodes = list(db.execute("SELECT id, day, lat, lng FROM nodes WHERE trip_slug = ? AND type != 'transport' ORDER BY day, time", (slug,)))
         db.execute("DELETE FROM edges WHERE trip_slug = ?", (slug,))
         generated = []
         for index, current in enumerate(nodes[:-1]):

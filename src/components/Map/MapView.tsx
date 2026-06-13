@@ -8,7 +8,7 @@ import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-
 import L from 'leaflet';
 import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryNode, ItineraryEdge } from '../../types';
-import { MapPin, Plane, Car, Train, Navigation, Layers, Compass } from 'lucide-react';
+import { Plane, Car, Train, Navigation, Compass, X, ChevronLeft, ChevronRight } from 'lucide-react';
 
 // Custom icons setup using dynamic SVG inside DivIcon
 const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
@@ -147,13 +147,12 @@ export default function MapView() {
   } = useItineraryStore();
 
   const [mapStyle, setMapStyle] = useState<'light' | 'dark' | 'voyager'>('voyager');
+  const [preview, setPreview] = useState<{ node: ItineraryNode; index: number } | null>(null);
 
   // Filter nodes according to current activeDay selector
-  const visibleNodes = activeDay === 'all' 
-    ? nodes 
-    : nodes.filter(n => n.day === activeDay);
+  const visibleNodes = nodes.filter(n => n.type !== 'transport' && (activeDay === 'all' || n.day === activeDay));
 
-  const activeNode = nodes.find(n => n.id === activeNodeId) || null;
+  const activeNode = nodes.find(n => n.id === activeNodeId && n.type !== 'transport') || null;
 
   // Filter edges where both end-nodes are currently visible/valid
   const visibleEdges = edges.filter(edge => {
@@ -198,6 +197,11 @@ export default function MapView() {
 
   return (
     <div className="relative w-full h-full shadow-inner bg-slate-100 overflow-hidden rounded-2xl border border-white/20">
+      {preview && <div className="absolute inset-0 z-[12000] flex items-center justify-center bg-slate-950/75 p-5 backdrop-blur-sm">
+        <button onClick={() => setPreview(null)} className="absolute right-5 top-5 rounded-full bg-white/15 p-2 text-white"><X className="h-5 w-5" /></button>
+        {(preview.node.image_urls?.length || 0) > 1 && <><button onClick={() => setPreview({ ...preview, index: (preview.index - 1 + (preview.node.image_urls?.length || 1)) % (preview.node.image_urls?.length || 1) })} className="absolute left-4 rounded-full bg-white/15 p-2 text-white"><ChevronLeft /></button><button onClick={() => setPreview({ ...preview, index: (preview.index + 1) % (preview.node.image_urls?.length || 1) })} className="absolute right-4 rounded-full bg-white/15 p-2 text-white"><ChevronRight /></button></>}
+        <img src={(preview.node.image_urls?.length ? preview.node.image_urls : [preview.node.image_url || ''])[preview.index]} alt={preview.node.title} className="max-h-[78%] max-w-[85%] rounded-2xl object-contain shadow-2xl" />
+      </div>}
       
       {/* Map Custom Theme Selector Trigger */}
       <div className="absolute top-4 right-4 z-[9999] flex items-center space-x-1 bg-white/70 backdrop-blur-md rounded-full px-2.5 py-1 shadow-md border border-white/60">
@@ -329,7 +333,10 @@ export default function MapView() {
               <Popup>
                 <div className="text-sm font-sans max-w-[200px]">
                   {node.image_url && (
-                    <img src={node.image_url} alt={node.title} className="w-full h-24 object-cover rounded-lg mb-2" />
+                    <button onClick={() => setPreview({ node, index: 0 })} className="group relative mb-2 block h-24 w-full overflow-hidden rounded-lg">
+                      <img src={node.image_url} alt={node.title} className="h-full w-full object-cover transition group-hover:scale-105" />
+                      <span className="absolute inset-0 flex items-center justify-center bg-slate-950/0 text-[10px] font-bold text-white transition group-hover:bg-slate-950/35">点击查看大图</span>
+                    </button>
                   )}
                   <div className="font-bold text-slate-900 leading-tight mb-1">{node.title}</div>
                   <div className="flex items-center space-x-2 mb-1.5">

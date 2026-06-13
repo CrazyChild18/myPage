@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     ports:
       - "0.0.0.0:25565:8080"
+    environment:
+      AMAP_WEB_SERVICE_KEY: ${AMAP_WEB_SERVICE_KEY:-}
     volumes:
       - voyageplanner-data:/data
 

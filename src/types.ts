@@ -4,6 +4,7 @@
  */
 
 export type ItineraryType = 'transport' | 'hotel' | 'restaurant' | 'sightseeing' | 'leisure' | 'shopping';
+export type TransportMode = 'flight' | 'high_speed_rail' | 'train' | 'bus' | 'ferry' | 'other';
 
 export interface ItineraryNode {
   id: string;
@@ -14,7 +15,16 @@ export interface ItineraryNode {
   day: number; // e.g., 1, 2, 3
   date: string; // e.g., "2026-09-26"
   city?: string;
+  address?: string;
   image_url?: string;
+  image_urls?: string[];
+  transport_mode?: TransportMode;
+  departure_place?: string;
+  arrival_place?: string;
+  arrival_time?: string;
+  arrival_date?: string;
+  service_number?: string;
+  duration?: string;
   lat: number;
   lng: number;
   status: 'completed' | 'ongoing' | 'planned';
@@ -49,6 +59,15 @@ export interface Trip {
   car: string;
   car_image_url?: string;
   accommodations: Accommodation[];
+}
+
+export interface TripSummary extends Trip {
+  node_count: number;
+  day_count: number;
+  center_lat: number;
+  center_lng: number;
+  cover_image_url?: string;
+  cities: string[];
 }
 
 export interface TripResponse extends Trip {
