@@ -37,6 +37,7 @@ DIST_DIR = PROJECT_DIR / "dist"
 DATABASE = Path(os.environ.get("DATABASE_PATH", BASE_DIR / "voyageplanner.db"))
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", DATABASE.parent / "uploads"))
 AMAP_WEB_SERVICE_KEY = os.environ.get("AMAP_WEB_SERVICE_KEY", "")
+OVERSEAS_GEOCODE_PROVIDER = os.environ.get("OVERSEAS_GEOCODE_PROVIDER", "nominatim").lower()
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 GEOCODE_CACHE_TTL = 24 * 60 * 60
@@ -434,6 +435,93 @@ def amap_text(value):
     return value if isinstance(value, str) else ""
 
 
+def nominatim_search(query):
+    results = nominatim_request(
+        "search",
+        {"q": query, "format": "jsonv2", "addressdetails": 1, "limit": 6, "accept-language": "zh-CN,en"},
+    )
+    return [
+        {
+            "name": item.get("name") or item["display_name"].split(",")[0],
+            "display_name": item["display_name"],
+            "lat": float(item["lat"]),
+            "lng": float(item["lon"]),
+            "city": next(
+                (
+                    item.get("address", {}).get(key)
+                    for key in ("city", "town", "village", "municipality", "county", "state")
+                    if item.get("address", {}).get(key)
+                ),
+                "",
+            ),
+            "provider": "osm",
+        }
+        for item in results
+    ]
+
+
+def photon_display_name(properties):
+    return ", ".join(
+        dict.fromkeys(
+            str(properties.get(key, "")).strip()
+            for key in ("name", "street", "city", "county", "state", "country")
+            if str(properties.get(key, "")).strip()
+        )
+    )
+
+
+def photon_search(query):
+    result = json_request("https://photon.komoot.io/api/", {"q": query, "limit": 6, "lang": "en"})
+    payload = []
+    for feature in result.get("features", []):
+        properties = feature.get("properties", {})
+        coordinates = feature.get("geometry", {}).get("coordinates", [])
+        if len(coordinates) < 2:
+            continue
+        payload.append(
+            {
+                "name": properties.get("name") or properties.get("city") or query,
+                "display_name": photon_display_name(properties),
+                "lat": float(coordinates[1]),
+                "lng": float(coordinates[0]),
+                "city": properties.get("city") or properties.get("county") or properties.get("state") or "",
+                "provider": "osm",
+            }
+        )
+    return payload
+
+
+def overseas_search(query):
+    if OVERSEAS_GEOCODE_PROVIDER == "photon":
+        return photon_search(query)
+    try:
+        return nominatim_search(query)
+    except Exception:
+        return photon_search(query)
+
+
+def overseas_reverse(lat, lng):
+    if OVERSEAS_GEOCODE_PROVIDER != "photon":
+        try:
+            item = nominatim_request(
+                "reverse",
+                {"lat": lat, "lon": lng, "format": "jsonv2", "addressdetails": 1, "accept-language": "zh-CN,en"},
+            )
+            address = item.get("address", {})
+            city = next((address.get(key) for key in ("city", "town", "village", "municipality", "county", "state") if address.get(key)), "")
+            return {"display_name": item.get("display_name", ""), "city": city, "provider": "osm"}
+        except Exception:
+            pass
+    result = json_request("https://photon.komoot.io/reverse", {"lat": lat, "lon": lng, "lang": "en"})
+    feature = next(iter(result.get("features", [])), {})
+    properties = feature.get("properties", {})
+    return {
+        "display_name": photon_display_name(properties),
+        "city": properties.get("city") or properties.get("county") or properties.get("state") or "",
+        "provider": "osm",
+    }
+
+
 @app.get("/api/geocode/search")
 def hybrid_geocode_search():
     query = request.args.get("q", "").strip()
@@ -471,36 +559,13 @@ def hybrid_geocode_search():
                 )
             return jsonify(payload)
 
-        results = cached_geocode(
-            ("search", "osm", query.casefold()),
+        return jsonify(cached_geocode(
+            ("search", "osm", OVERSEAS_GEOCODE_PROVIDER, query.casefold()),
             GEOCODE_CACHE_TTL,
-            lambda: nominatim_request(
-                "search",
-                {"q": query, "format": "jsonv2", "addressdetails": 1, "limit": 6, "accept-language": "zh-CN,en"},
-            ),
-        )
+            lambda: overseas_search(query),
+        ))
     except Exception:
         return jsonify({"error": "地点搜索服务暂时不可用"}), 502
-    return jsonify(
-        [
-            {
-                "name": item.get("name") or item["display_name"].split(",")[0],
-                "display_name": item["display_name"],
-                "lat": float(item["lat"]),
-                "lng": float(item["lon"]),
-                "city": next(
-                    (
-                        item.get("address", {}).get(key)
-                        for key in ("city", "town", "village", "municipality", "county", "state")
-                        if item.get("address", {}).get(key)
-                    ),
-                    "",
-                ),
-                "provider": "osm",
-            }
-            for item in results
-        ]
-    )
 
 
 @app.get("/api/geocode/reverse")
@@ -530,21 +595,15 @@ def hybrid_geocode_reverse():
                 }
             )
 
-        item = cached_geocode(
-            cache_key,
+        return jsonify(cached_geocode(
+            ("reverse", provider, OVERSEAS_GEOCODE_PROVIDER, round(lat, 4), round(lng, 4)),
             REVERSE_CACHE_TTL,
-            lambda: nominatim_request(
-                "reverse",
-                {"lat": lat, "lon": lng, "format": "jsonv2", "addressdetails": 1, "accept-language": "zh-CN,en"},
-            ),
-        )
+            lambda: overseas_reverse(lat, lng),
+        ))
     except (KeyError, ValueError):
         return jsonify({"error": "无效坐标"}), 400
     except Exception:
         return jsonify({"error": "地址查询服务暂时不可用"}), 502
-    address = item.get("address", {})
-    city = next((address.get(key) for key in ("city", "town", "village", "municipality", "county", "state") if address.get(key)), "")
-    return jsonify({"display_name": item.get("display_name", ""), "city": city, "provider": "osm"})
 
 
 @app.post("/api/trips/<slug>/images")
