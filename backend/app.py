@@ -70,6 +70,22 @@ def connection():
     return db
 
 
+def table_columns(db, table):
+    return {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+
+
+def add_column_if_missing(db, table, column, definition):
+    if column in table_columns(db, table):
+        return False
+    try:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        return True
+    except sqlite3.OperationalError as error:
+        if "duplicate column name" in str(error).lower():
+            return False
+        raise
+
+
 def init_database():
     DATABASE.parent.mkdir(parents=True, exist_ok=True)
     with connection() as db:
@@ -139,33 +155,30 @@ def init_database():
             """
         )
         count = db.execute("SELECT COUNT(*) FROM trips").fetchone()[0]
-        trip_columns = {row[1] for row in db.execute("PRAGMA table_info(trips)")}
-        node_columns = {row[1] for row in db.execute("PRAGMA table_info(nodes)")}
-        if "car_image_url" not in trip_columns:
-            db.execute("ALTER TABLE trips ADD COLUMN car_image_url TEXT NOT NULL DEFAULT ''")
-        if "image_url" not in node_columns:
-            db.execute("ALTER TABLE nodes ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
-        if "image_urls" not in node_columns:
-            db.execute("ALTER TABLE nodes ADD COLUMN image_urls TEXT NOT NULL DEFAULT '[]'")
+        add_column_if_missing(db, "trips", "car_image_url", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(db, "nodes", "image_url", "TEXT NOT NULL DEFAULT ''")
+        if add_column_if_missing(db, "nodes", "image_urls", "TEXT NOT NULL DEFAULT '[]'"):
             db.execute(
                 "UPDATE nodes SET image_urls = json_array(image_url) WHERE image_url != ''"
             )
-        if "address" not in node_columns:
-            db.execute("ALTER TABLE nodes ADD COLUMN address TEXT NOT NULL DEFAULT ''")
-        for column in ("transport_mode", "departure_place", "arrival_place", "arrival_time", "arrival_date", "service_number", "duration"):
-            if column not in node_columns:
-                db.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(db, "nodes", "address", "TEXT NOT NULL DEFAULT ''")
+        for column in (
+            "transport_mode",
+            "departure_place",
+            "arrival_place",
+            "arrival_time",
+            "arrival_date",
+            "service_number",
+            "duration",
+        ):
+            add_column_if_missing(db, "nodes", column, "TEXT NOT NULL DEFAULT ''")
         for column in ("end_time", "end_date"):
-            if column not in node_columns:
-                db.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
-        if "end_day" not in node_columns:
-            db.execute("ALTER TABLE nodes ADD COLUMN end_day INTEGER NOT NULL DEFAULT 0")
+            add_column_if_missing(db, "nodes", column, "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(db, "nodes", "end_day", "INTEGER NOT NULL DEFAULT 0")
         for column in ("timezone", "departure_timezone", "arrival_timezone"):
-            if column not in node_columns:
-                db.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            add_column_if_missing(db, "nodes", column, "TEXT NOT NULL DEFAULT ''")
         for column in ("departure_lat", "departure_lng", "arrival_lat", "arrival_lng"):
-            if column not in node_columns:
-                db.execute(f"ALTER TABLE nodes ADD COLUMN {column} REAL")
+            add_column_if_missing(db, "nodes", column, "REAL")
         migrate_journey_routes(db)
         if count == 0:
             reset_trip(db)
