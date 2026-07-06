@@ -6,9 +6,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Polyline, Popup, Tooltip, ZoomControl, useMap } from 'react-leaflet';
 import L from 'leaflet';
+import ImagePreviewModal from '../ImagePreviewModal/ImagePreviewModal';
 import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryNode, ItineraryEdge, TripSummary } from '../../types';
-import { Plane, Car, Train, Navigation, Compass, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plane, Car, Train, Navigation, Compass } from 'lucide-react';
+
+type PreviewState = { node: ItineraryNode; index: number } | null;
+const imagesOf = (node: ItineraryNode) => node.image_urls?.length ? node.image_urls : node.image_url ? [node.image_url] : [];
 
 // Custom icons setup using dynamic SVG inside DivIcon
 const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
@@ -89,11 +93,11 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
       break;
   }
 
-  const borderClass = isSelected 
-    ? 'border-[3px] border-white scale-125 shadow-[0_0_15px_rgba(59,130,246,0.6)] animate-pulse z-[2000]' 
-    : 'border-2 border-white/90 scale-100 shadow-md hover:scale-110 z-[100]';
+  const borderClass = isSelected
+    ? 'box-border border-[3px] border-white shadow-[0_0_0_4px_rgba(99,102,241,0.22),0_10px_24px_rgba(79,70,229,0.34)] z-[2000]'
+    : 'box-border border-2 border-white/90 scale-100 shadow-md hover:scale-110 z-[100]';
   
-  const size = isSelected ? 44 : 36;
+  const size = 36;
 
   // Render HTML inside Leaflet
   return L.divIcon({
@@ -143,39 +147,6 @@ const transportPath = (node: ItineraryNode): [number, number][] => {
   });
 };
 
-// Map view controller focusing on the active node
-function MapNavController({ activeNode }: { activeNode: ItineraryNode | null }) {
-  const map = useMap();
-
-  useEffect(() => {
-    if (activeNode) {
-      const isMobile = window.matchMedia('(max-width: 639px)').matches;
-      if (
-        activeNode.type === 'transport' &&
-        activeNode.departure_lat != null &&
-        activeNode.departure_lng != null &&
-        activeNode.arrival_lat != null &&
-        activeNode.arrival_lng != null
-      ) {
-        map.fitBounds(
-          L.latLngBounds([
-            [activeNode.departure_lat, activeNode.departure_lng],
-            [activeNode.arrival_lat, activeNode.arrival_lng],
-          ]),
-          { animate: true, duration: 0.8, padding: [70, 70], maxZoom: isMobile ? 6 : 9 },
-        );
-        return;
-      }
-      map.flyTo([activeNode.lat, activeNode.lng], isMobile ? 11 : 14, {
-        animate: true,
-        duration: 1.2
-      });
-    }
-  }, [activeNode, map]);
-
-  return null;
-}
-
 // Fit-Bounds helper to encompass active items automatically
 function FitBoundsController({ points, activeDay }: { points: [number, number][]; activeDay: string | number }) {
   const map = useMap();
@@ -208,6 +179,116 @@ function HomeMapController({ trip }: { trip: TripSummary | null }) {
   return null;
 }
 
+type TransportRouteLayerProps = {
+  route: ItineraryNode;
+  selected: boolean;
+  onSelect: () => void;
+  renderTransportIcon: (type?: string) => React.ReactNode;
+};
+
+const TransportRouteLayer: React.FC<TransportRouteLayerProps> = ({
+  route,
+  selected,
+  onSelect,
+  renderTransportIcon,
+}) => {
+  const lineRef = useRef<L.Polyline>(null);
+  const path = transportPath(route);
+  const midpoint = path[Math.floor(path.length / 2)];
+
+  useEffect(() => {
+    if (selected) lineRef.current?.openPopup();
+  }, [selected]);
+
+  return (
+    <React.Fragment>
+      <Polyline
+        ref={lineRef}
+        positions={path}
+        pathOptions={{ color: selected ? '#2563eb' : '#38bdf8', weight: selected ? 4 : 2.5, opacity: selected ? 1 : 0.78, dashArray: selected ? undefined : '9, 9' }}
+        eventHandlers={{ click: onSelect }}
+      >
+        <Popup position={midpoint} autoPan={false} closeButton={false} closeOnClick={false}>
+          <div className="min-w-48 font-sans">
+            <div className="flex items-center gap-1.5 text-xs font-black text-sky-700">{renderTransportIcon(route.transport_mode === 'flight' ? 'flight' : route.transport_mode === 'train' || route.transport_mode === 'high_speed_rail' ? 'train' : 'other')}{route.service_number || '区间交通'}</div>
+            <div className="mt-2 text-[11px] font-bold text-slate-800">{route.departure_place} → {route.arrival_place}</div>
+            <div className="mt-1 text-[9px] text-slate-500">D{route.day} · {route.time} - {route.arrival_time || '--:--'} · {route.duration || '时长待补充'}</div>
+          </div>
+        </Popup>
+      </Polyline>
+      <Marker position={[route.departure_lat!, route.departure_lng!]} icon={transportEndpointIcon(selected)} eventHandlers={{ click: onSelect }} />
+      <Marker position={[route.arrival_lat!, route.arrival_lng!]} icon={transportEndpointIcon(selected)} eventHandlers={{ click: onSelect }} />
+    </React.Fragment>
+  );
+};
+
+type ItineraryNodeMarkerProps = {
+  node: ItineraryNode;
+  selected: boolean;
+  onSelect: () => void;
+  onPreview: (preview: NonNullable<PreviewState>) => void;
+};
+
+const ItineraryNodeMarker: React.FC<ItineraryNodeMarkerProps> = ({
+  node,
+  selected,
+  onSelect,
+  onPreview,
+}) => {
+  const markerRef = useRef<L.Marker>(null);
+
+  useEffect(() => {
+    if (selected) markerRef.current?.openPopup();
+  }, [selected]);
+
+  return (
+    <Marker
+      ref={markerRef}
+      position={[node.lat, node.lng]}
+      icon={createCustomMarkerIcon(node, selected)}
+      eventHandlers={{ click: onSelect }}
+    >
+      <Popup autoPan={false} closeButton={false} closeOnClick={false} className="itinerary-detail-popup">
+        <div className="max-w-[220px] text-sm font-sans">
+          {node.image_url && (
+            <button onClick={() => onPreview({ node, index: 0 })} className="group relative mb-2 block h-24 w-full overflow-hidden rounded-lg">
+              <img src={node.image_url} alt={node.title} className="h-full w-full object-cover transition group-hover:scale-105" />
+              <span className="absolute inset-0 flex items-center justify-center bg-slate-950/0 text-[10px] font-bold text-white transition group-hover:bg-slate-950/35">点击查看大图</span>
+            </button>
+          )}
+          <div className="mb-1 font-bold leading-tight text-slate-900">{node.title}</div>
+          <div className="mb-1.5 flex items-center space-x-2">
+            <span
+              className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
+              style={{
+                background: node.type === 'hotel' ? '#10b981' :
+                            node.type === 'restaurant' ? '#f43f5e' :
+                            node.type === 'sightseeing' ? '#8b5cf6' :
+                            node.type === 'transfer' ? '#0ea5e9' :
+                            node.type === 'leisure' ? '#f59e0b' :
+                            node.type === 'shopping' ? '#ec4899' : '#06b6d4'
+              }}
+            >
+              {node.type === 'hotel' ? '酒店' :
+               node.type === 'restaurant' ? '餐厅' :
+               node.type === 'sightseeing' ? '景点' :
+               node.type === 'transfer' ? '转机' :
+               node.type === 'leisure' ? '休闲' :
+               node.type === 'shopping' ? '购物' : '交通'}
+            </span>
+            <span className="font-mono text-[11px] font-semibold text-slate-500">
+              Day {node.day} · {node.date.slice(5)} · {node.time}
+            </span>
+          </div>
+          {node.description && (
+            <p className="mt-1 line-clamp-3 text-xs leading-snug text-slate-600">{node.description}</p>
+          )}
+        </div>
+      </Popup>
+    </Marker>
+  );
+};
+
 export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = null, onSelectHomeTrip, onOpenHomeTrip }: MapViewProps) {
   const { 
     nodes, 
@@ -219,7 +300,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     activeDay 
   } = useItineraryStore();
 
-  const [preview, setPreview] = useState<{ node: ItineraryNode; index: number } | null>(null);
+  const [preview, setPreview] = useState<PreviewState>(null);
 
   // Filter nodes according to current activeDay selector
   const visibleNodes = nodes.filter(n => n.type !== 'transport' && (activeDay === 'all' || n.day === activeDay));
@@ -238,8 +319,6 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
       [node.arrival_lat!, node.arrival_lng!] as [number, number],
     ]),
   ];
-
-  const activeNode = nodes.find(n => n.id === activeNodeId) || null;
 
   // Filter edges where both end-nodes are currently visible/valid
   const visibleEdges = edges.filter(edge => {
@@ -281,11 +360,15 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
   const selectedHomeTrip = trips.find((trip) => trip.slug === selectedHomeSlug) || null;
   return (
     <div className="relative isolate z-0 h-full w-full overflow-hidden bg-slate-100">
-      {preview && <div className="absolute inset-0 z-[12000] flex items-center justify-center bg-slate-950/75 p-5 backdrop-blur-sm">
-        <button onClick={() => setPreview(null)} className="absolute right-5 top-5 rounded-full bg-white/15 p-2 text-white"><X className="h-5 w-5" /></button>
-        {(preview.node.image_urls?.length || 0) > 1 && <><button onClick={() => setPreview({ ...preview, index: (preview.index - 1 + (preview.node.image_urls?.length || 1)) % (preview.node.image_urls?.length || 1) })} className="absolute left-4 rounded-full bg-white/15 p-2 text-white"><ChevronLeft /></button><button onClick={() => setPreview({ ...preview, index: (preview.index + 1) % (preview.node.image_urls?.length || 1) })} className="absolute right-4 rounded-full bg-white/15 p-2 text-white"><ChevronRight /></button></>}
-        <img src={(preview.node.image_urls?.length ? preview.node.image_urls : [preview.node.image_url || ''])[preview.index]} alt={preview.node.title} className="max-h-[78%] max-w-[85%] rounded-2xl object-contain shadow-2xl" />
-      </div>}
+      {preview && (
+        <ImagePreviewModal
+          images={imagesOf(preview.node)}
+          index={preview.index}
+          title={preview.node.title}
+          onClose={() => setPreview(null)}
+          onIndexChange={(index) => setPreview({ ...preview, index })}
+        />
+      )}
       
       {mode === 'trip' && <div className="absolute bottom-7 left-[calc(33.333%+2rem)] z-[9999] hidden items-center gap-3 rounded-full border border-white/70 bg-white/80 px-3 py-2 text-[9px] font-bold text-slate-600 shadow-lg backdrop-blur-md md:flex">
         <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-sky-400" /><Plane className="h-3 w-3 text-sky-500" />区间交通</span>
@@ -310,7 +393,6 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
         <ZoomControl position="bottomright" />
         {/* Sync controllers */}
         {mode === 'home' ? <HomeMapController trip={selectedHomeTrip} /> : <>
-          <MapNavController activeNode={activeNode} />
           {fitPoints.length > 0 && <FitBoundsController points={fitPoints} activeDay={activeDay} />}
         </>}
 
@@ -336,26 +418,8 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
         ))}
 
         {mode === 'trip' && visibleTransportRoutes.map((route) => {
-          const path = transportPath(route);
           const selected = activeNodeId === route.id;
-          const midpoint = path[Math.floor(path.length / 2)];
-          return <React.Fragment key={`transport-route-${route.id}`}>
-            <Polyline
-              positions={path}
-              pathOptions={{ color: selected ? '#2563eb' : '#38bdf8', weight: selected ? 4 : 2.5, opacity: selected ? 1 : 0.78, dashArray: selected ? undefined : '9, 9' }}
-              eventHandlers={{ click: () => setActiveNodeId(route.id) }}
-            >
-              <Popup position={midpoint}>
-                <div className="min-w-48 font-sans">
-                  <div className="flex items-center gap-1.5 text-xs font-black text-sky-700">{getTransportIcon(route.transport_mode === 'flight' ? 'flight' : route.transport_mode === 'train' || route.transport_mode === 'high_speed_rail' ? 'train' : 'other')}{route.service_number || '区间交通'}</div>
-                  <div className="mt-2 text-[11px] font-bold text-slate-800">{route.departure_place} → {route.arrival_place}</div>
-                  <div className="mt-1 text-[9px] text-slate-500">D{route.day} · {route.time} - {route.arrival_time || '--:--'} · {route.duration || '时长待补充'}</div>
-                </div>
-              </Popup>
-            </Polyline>
-            <Marker position={[route.departure_lat!, route.departure_lng!]} icon={transportEndpointIcon(selected)} eventHandlers={{ click: () => setActiveNodeId(route.id) }} />
-            <Marker position={[route.arrival_lat!, route.arrival_lng!]} icon={transportEndpointIcon(selected)} eventHandlers={{ click: () => setActiveNodeId(route.id) }} />
-          </React.Fragment>;
+          return <TransportRouteLayer key={`transport-route-${route.id}`} route={route} selected={selected} onSelect={() => setActiveNodeId(route.id)} renderTransportIcon={getTransportIcon} />;
         })}
 
         {/* Draw edges (connecting networks) */}
@@ -418,64 +482,15 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
         })}
 
         {/* Draw Nodes MapPins */}
-        {mode === 'trip' && visibleNodes.map((node) => {
-          const isSelected = activeNodeId === node.id;
-          
-          return (
-            <Marker
-              key={node.id}
-              position={[node.lat, node.lng]}
-              icon={createCustomMarkerIcon(node, isSelected)}
-              eventHandlers={{
-                click: () => {
-                  setActiveNodeId(node.id);
-                }
-              }}
-            >
-              <Popup>
-                <div className="text-sm font-sans max-w-[200px]">
-                  {node.image_url && (
-                    <button onClick={() => setPreview({ node, index: 0 })} className="group relative mb-2 block h-24 w-full overflow-hidden rounded-lg">
-                      <img src={node.image_url} alt={node.title} className="h-full w-full object-cover transition group-hover:scale-105" />
-                      <span className="absolute inset-0 flex items-center justify-center bg-slate-950/0 text-[10px] font-bold text-white transition group-hover:bg-slate-950/35">点击查看大图</span>
-                    </button>
-                  )}
-                  <div className="font-bold text-slate-900 leading-tight mb-1">{node.title}</div>
-                  <div className="flex items-center space-x-2 mb-1.5">
-                    <span className="text-[10px] font-bold text-white uppercase tracking-wider px-2 py-0.5 rounded-full" 
-                          style={{
-                            background: node.type === 'hotel' ? '#10b981' :
-                                        node.type === 'restaurant' ? '#f43f5e' :
-                                        node.type === 'sightseeing' ? '#8b5cf6' :
-                                        node.type === 'transfer' ? '#0ea5e9' :
-                                        node.type === 'leisure' ? '#f59e0b' :
-                                        node.type === 'shopping' ? '#ec4899' : '#06b6d4'
-                          }}>
-                      {node.type === 'hotel' ? '酒店' :
-                       node.type === 'restaurant' ? '餐厅' :
-                       node.type === 'sightseeing' ? '景点' :
-                       node.type === 'transfer' ? '转机' :
-                       node.type === 'leisure' ? '休闲' :
-                       node.type === 'shopping' ? '购物' : '交通'}
-                    </span>
-                    <span className="text-[11px] font-semibold text-slate-500 font-mono">
-                      Day {node.day} · {node.date.slice(5)} · {node.time}
-                    </span>
-                  </div>
-                  {node.description && (
-                    <p className="text-xs text-slate-600 line-clamp-2 leading-snug mt-1">{node.description}</p>
-                  )}
-                  <button 
-                    onClick={() => setActiveNodeId(node.id)}
-                    className="w-full mt-2 text-center text-[10px] bg-indigo-50 hover:bg-indigo-100 text-indigo-600 py-1 rounded font-semibold transition"
-                  >
-                    聚焦时间轴节点
-                  </button>
-                </div>
-              </Popup>
-            </Marker>
-          );
-        })}
+        {mode === 'trip' && visibleNodes.map((node) => (
+          <ItineraryNodeMarker
+            key={node.id}
+            node={node}
+            selected={activeNodeId === node.id}
+            onSelect={() => setActiveNodeId(node.id)}
+            onPreview={setPreview}
+          />
+        ))}
       </MapContainer>
     </div>
   );

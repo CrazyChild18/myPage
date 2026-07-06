@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { CheckCircle2, ChevronLeft, ChevronRight, Circle, Clock, Image as ImageIcon, MapPin, X } from 'lucide-react';
+import { CheckCircle2, Circle, Clock, Image as ImageIcon, MapPin } from 'lucide-react';
+import ImagePreviewModal from '../ImagePreviewModal/ImagePreviewModal';
 import TransportTicket from '../TransportTicket/TransportTicket';
 import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryNode, ItineraryType } from '../../types';
@@ -58,19 +59,17 @@ export default function Timeline() {
     }, 120);
   };
 
-  const move = (offset: number) => setPreview((current) => {
-    if (!current) return null;
-    const images = imagesOf(current.node);
-    return { ...current, index: (current.index + offset + images.length) % images.length };
-  });
-
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
-      {preview && <div className="fixed inset-0 z-[20000] flex items-center justify-center bg-slate-950/90 p-4">
-        <button onClick={() => setPreview(null)} className="absolute right-5 top-5 rounded-full bg-white/10 p-2 text-white"><X className="h-5 w-5" /></button>
-        {imagesOf(preview.node).length > 1 && <><button onClick={() => move(-1)} className="absolute left-5 rounded-full bg-white/10 p-2 text-white"><ChevronLeft /></button><button onClick={() => move(1)} className="absolute right-5 rounded-full bg-white/10 p-2 text-white"><ChevronRight /></button></>}
-        <figure><img src={imagesOf(preview.node)[preview.index]} alt={preview.node.title} className="max-h-[80vh] max-w-[86vw] rounded-2xl object-contain shadow-2xl" /><figcaption className="mt-3 text-center text-sm font-bold text-white">{preview.node.title}</figcaption></figure>
-      </div>}
+      {preview && (
+        <ImagePreviewModal
+          images={imagesOf(preview.node)}
+          index={preview.index}
+          title={preview.node.title}
+          onClose={() => setPreview(null)}
+          onIndexChange={(index) => setPreview({ ...preview, index })}
+        />
+      )}
 
       <div className="mb-3 shrink-0 rounded-2xl border border-white/50 bg-white/40 p-3 shadow-lg backdrop-blur-md">
         <div className="mb-2 flex items-center justify-between text-xs font-bold text-slate-800"><span>行程时间线</span><span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[10px] text-indigo-700">{nodes.filter((node) => node.type !== 'transport').length} 个地点 · {nodes.filter((node) => node.type === 'transport').length} 段交通</span></div>

@@ -1,13 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import { useItineraryStore } from '../store/useItineraryStore';
 import { ItineraryNode, ItineraryType } from '../types';
+import ImagePreviewModal from '../components/ImagePreviewModal/ImagePreviewModal';
 import TransportTicket from '../components/TransportTicket/TransportTicket';
 import {
   Bed,
   CalendarDays,
   Car,
-  ChevronLeft,
-  ChevronRight,
   Clock,
   FileText,
   Image as ImageIcon,
@@ -15,7 +14,6 @@ import {
   Plane,
   Printer,
   Users,
-  X,
 } from 'lucide-react';
 
 const typeLabels: Record<ItineraryType, string> = {
@@ -57,51 +55,16 @@ export default function DetailView() {
     if (images.length) setPreview({ images, index, title: node.title });
   };
 
-  const movePreview = (offset: number) => {
-    setPreview((current) => {
-      if (!current) return null;
-      const index = (current.index + offset + current.images.length) % current.images.length;
-      return { ...current, index };
-    });
-  };
-
   return (
     <div className="visa-itinerary space-y-5">
       {preview && (
-        <div className="fixed inset-0 z-[20000] flex items-center justify-center bg-slate-950/92 p-4 print:hidden">
-          <button onClick={() => setPreview(null)} className="absolute right-5 top-5 rounded-full bg-white/10 p-2 text-white backdrop-blur">
-            <X className="h-5 w-5" />
-          </button>
-          {preview.images.length > 1 && (
-            <>
-              <button onClick={() => movePreview(-1)} className="absolute left-3 rounded-full bg-white/10 p-2.5 text-white backdrop-blur sm:left-8">
-                <ChevronLeft className="h-6 w-6" />
-              </button>
-              <button onClick={() => movePreview(1)} className="absolute right-3 rounded-full bg-white/10 p-2.5 text-white backdrop-blur sm:right-8">
-                <ChevronRight className="h-6 w-6" />
-              </button>
-            </>
-          )}
-          <figure className="max-w-5xl">
-            <img src={preview.images[preview.index]} alt={preview.title} className="max-h-[80vh] max-w-full rounded-2xl object-contain shadow-2xl" />
-            <figcaption className="mt-4 text-center text-sm font-semibold text-white">
-              {preview.title}
-              {preview.images.length > 1 && <span className="ml-2 text-white/50">{preview.index + 1} / {preview.images.length}</span>}
-            </figcaption>
-            {preview.images.length > 1 && (
-              <div className="mt-3 flex justify-center gap-1.5">
-                {preview.images.map((image, index) => (
-                  <button
-                    key={image}
-                    onClick={() => setPreview({ ...preview, index })}
-                    className={`h-1.5 rounded-full transition ${index === preview.index ? 'w-6 bg-white' : 'w-1.5 bg-white/35'}`}
-                    aria-label={`查看第 ${index + 1} 张图片`}
-                  />
-                ))}
-              </div>
-            )}
-          </figure>
-        </div>
+        <ImagePreviewModal
+          images={preview.images}
+          index={preview.index}
+          title={preview.title}
+          onClose={() => setPreview(null)}
+          onIndexChange={(index) => setPreview({ ...preview, index })}
+        />
       )}
 
       <section className="visa-cover overflow-hidden rounded-3xl border border-white/60 bg-white/65 shadow-xl backdrop-blur-xl print:rounded-none print:border-0 print:bg-white print:shadow-none">
