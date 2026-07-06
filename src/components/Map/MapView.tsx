@@ -9,6 +9,7 @@ import L from 'leaflet';
 import ImagePreviewModal from '../ImagePreviewModal/ImagePreviewModal';
 import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryNode, ItineraryEdge, TripSummary } from '../../types';
+import { isScheduledNode } from '../../utils/itinerary';
 import { Plane, Car, Train, Navigation, Compass } from 'lucide-react';
 
 type PreviewState = { node: ItineraryNode; index: number } | null;
@@ -303,8 +304,9 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
   const [preview, setPreview] = useState<PreviewState>(null);
 
   // Filter nodes according to current activeDay selector
-  const visibleNodes = nodes.filter(n => n.type !== 'transport' && (activeDay === 'all' || n.day === activeDay));
+  const visibleNodes = nodes.filter(n => isScheduledNode(n) && n.type !== 'transport' && (activeDay === 'all' || n.day === activeDay));
   const visibleTransportRoutes = nodes.filter((node) =>
+    isScheduledNode(node) &&
     node.type === 'transport' &&
     node.departure_lat != null &&
     node.departure_lng != null &&

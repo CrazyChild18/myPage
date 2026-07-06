@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useItineraryStore } from '../store/useItineraryStore';
 import { ItineraryNode, ItineraryType } from '../types';
+import { compareItineraryNodes, isScheduledNode } from '../utils/itinerary';
 import ImagePreviewModal from '../components/ImagePreviewModal/ImagePreviewModal';
 import TransportTicket from '../components/TransportTicket/TransportTicket';
 import {
@@ -47,7 +48,7 @@ const formatDisplayDate = (date: string) =>
 export default function DetailView() {
   const { trip, nodes } = useItineraryStore();
   const [preview, setPreview] = useState<{ images: string[]; index: number; title: string } | null>(null);
-  const sorted = useMemo(() => [...nodes].sort((a, b) => a.day - b.day || a.time.localeCompare(b.time)), [nodes]);
+  const sorted = useMemo(() => nodes.filter(isScheduledNode).sort(compareItineraryNodes), [nodes]);
   const days = useMemo(() => Array.from(new Set(sorted.map((node) => node.day))), [sorted]);
 
   const open = (node: ItineraryNode, index: number) => {

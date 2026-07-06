@@ -1,12 +1,14 @@
 import React from 'react';
-import { Bus, Clock3, Plane, Ship, TrainFront } from 'lucide-react';
+import { Bus, Car, Clock3, Plane, Ship, TrainFront } from 'lucide-react';
 import { ItineraryNode, TransportMode } from '../../types';
 
 const modes: Record<TransportMode, { label: string; icon: React.ComponentType<{ className?: string }>; tone: string }> = {
   flight: { label: '航班', icon: Plane, tone: 'from-sky-500 to-indigo-600' },
   high_speed_rail: { label: '高铁', icon: TrainFront, tone: 'from-emerald-500 to-teal-600' },
   train: { label: '火车', icon: TrainFront, tone: 'from-orange-500 to-rose-500' },
-  bus: { label: '巴士', icon: Bus, tone: 'from-violet-500 to-indigo-600' },
+  car: { label: '汽车', icon: Car, tone: 'from-blue-500 to-cyan-600' },
+  bus: { label: '公交车', icon: Bus, tone: 'from-violet-500 to-indigo-600' },
+  subway: { label: '地铁', icon: TrainFront, tone: 'from-lime-500 to-emerald-600' },
   ferry: { label: '轮渡', icon: Ship, tone: 'from-cyan-500 to-blue-600' },
   other: { label: '交通', icon: TrainFront, tone: 'from-slate-500 to-slate-700' },
 };

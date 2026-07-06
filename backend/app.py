@@ -97,6 +97,9 @@ def init_database():
                 time TEXT NOT NULL,
                 day INTEGER NOT NULL,
                 date TEXT NOT NULL,
+                end_time TEXT NOT NULL DEFAULT '',
+                end_day INTEGER NOT NULL DEFAULT 0,
+                end_date TEXT NOT NULL DEFAULT '',
                 city TEXT NOT NULL DEFAULT '',
                 address TEXT NOT NULL DEFAULT '',
                 lat REAL NOT NULL,
@@ -149,6 +152,11 @@ def init_database():
         for column in ("transport_mode", "departure_place", "arrival_place", "arrival_time", "arrival_date", "service_number", "duration"):
             if column not in node_columns:
                 db.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        for column in ("end_time", "end_date"):
+            if column not in node_columns:
+                db.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        if "end_day" not in node_columns:
+            db.execute("ALTER TABLE nodes ADD COLUMN end_day INTEGER NOT NULL DEFAULT 0")
         for column in ("departure_lat", "departure_lng", "arrival_lat", "arrival_lng"):
             if column not in node_columns:
                 db.execute(f"ALTER TABLE nodes ADD COLUMN {column} REAL")
@@ -271,9 +279,10 @@ def serialize_trip(db, slug):
         row_to_node(row)
         for row in db.execute(
             """SELECT id, title, description, type, time, day, date, city, address, lat, lng, status,
-            image_url, image_urls, transport_mode, departure_place, arrival_place, arrival_time,
+            end_time, end_day, end_date, image_url, image_urls, transport_mode, departure_place, arrival_place, arrival_time,
             arrival_date, service_number, duration, departure_lat, departure_lng, arrival_lat, arrival_lng
-            FROM nodes WHERE trip_slug = ? ORDER BY day, time""",
+            FROM nodes WHERE trip_slug = ?
+            ORDER BY CASE WHEN status = 'unscheduled' THEN 1 ELSE 0 END, day, time, title""",
             (slug,),
         )
     ]
@@ -301,17 +310,19 @@ def list_trips():
             trip["accommodations"] = json.loads(trip["accommodations"])
             nodes = list(
                 db.execute(
-                    """SELECT title, city, day, lat, lng, image_url, type
-                    FROM nodes WHERE trip_slug = ? ORDER BY day, time""",
+                    """SELECT title, city, day, lat, lng, image_url, type, status
+                    FROM nodes WHERE trip_slug = ?
+                    ORDER BY CASE WHEN status = 'unscheduled' THEN 1 ELSE 0 END, day, time, title""",
                     (trip["slug"],),
                 )
             )
-            map_nodes = [node for node in nodes if node["type"] != "transport"] or nodes
+            scheduled_nodes = [node for node in nodes if node["status"] != "unscheduled" and node["day"] > 0]
+            map_nodes = [node for node in scheduled_nodes if node["type"] != "transport"] or [node for node in nodes if node["type"] != "transport"] or nodes
             cover_node = next((node for node in map_nodes if node["image_url"]), None)
             trip.update(
                 {
                     "node_count": len(nodes),
-                    "day_count": max((node["day"] for node in nodes), default=0),
+                    "day_count": max((node["day"] for node in scheduled_nodes), default=0),
                     "center_lat": sum(node["lat"] for node in map_nodes) / len(map_nodes) if map_nodes else 0,
                     "center_lng": sum(node["lng"] for node in map_nodes) / len(map_nodes) if map_nodes else 0,
                     "cover_image_url": cover_node["image_url"] if cover_node else trip["car_image_url"],
@@ -776,23 +787,33 @@ def uploaded_image(filename):
 
 def node_payload(payload, existing=None):
     source = {**(dict(existing) if existing else {}), **payload}
-    required = ("title", "type", "time", "day", "date", "lat", "lng", "status")
+    required = ("title", "type", "lat", "lng", "status")
     if any(source.get(key) in (None, "") for key in required):
         raise ValueError("Missing required node fields")
+    node_type = str(source["type"]).strip()
+    status = str(source["status"]).strip()
+    is_unscheduled_point = node_type != "transport" and status == "unscheduled"
+    if node_type == "transport" and status == "unscheduled":
+        status = "planned"
+    if not is_unscheduled_point and any(source.get(key) in (None, "") for key in ("time", "day", "date")):
+        raise ValueError("Missing required schedule fields")
     image_urls = image_urls_from_source(source)
 
     return {
         "title": str(source["title"]).strip(),
         "description": str(source.get("description", "")).strip(),
-        "type": source["type"],
-        "time": source["time"],
-        "day": int(source["day"]),
-        "date": source["date"],
+        "type": node_type,
+        "time": "" if is_unscheduled_point else str(source["time"]).strip(),
+        "day": 0 if is_unscheduled_point else int(source["day"]),
+        "date": "" if is_unscheduled_point else str(source["date"]).strip(),
+        "end_time": "" if is_unscheduled_point else str(source.get("end_time") or source.get("arrival_time") or source["time"]).strip(),
+        "end_day": 0 if is_unscheduled_point else int(source.get("end_day") or source["day"]),
+        "end_date": "" if is_unscheduled_point else str(source.get("end_date") or source.get("arrival_date") or source["date"]).strip(),
         "city": str(source.get("city", "")).strip(),
         "address": str(source.get("address", "")).strip(),
         "lat": float(source["lat"]),
         "lng": float(source["lng"]),
-        "status": source["status"],
+        "status": status,
         "image_url": image_urls[0] if image_urls else "",
         "image_urls": json.dumps(image_urls, ensure_ascii=False),
         "transport_mode": str(source.get("transport_mode", "")).strip(),
@@ -820,10 +841,10 @@ def create_node(slug):
     with connection() as db:
         db.execute(
             """INSERT INTO nodes
-            (id, trip_slug, title, description, type, time, day, date, city, address, lat, lng, status, image_url, image_urls,
+            (id, trip_slug, title, description, type, time, day, date, end_time, end_day, end_date, city, address, lat, lng, status, image_url, image_urls,
             transport_mode, departure_place, arrival_place, arrival_time, arrival_date, service_number, duration,
             departure_lat, departure_lng, arrival_lat, arrival_lng)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (node_id, slug, *item.values()),
         )
     return jsonify(row_to_node({"id": node_id, **item})), 201
@@ -845,7 +866,7 @@ def update_node(slug, node_id):
         next_image_urls = set(image_urls_from_source(item))
         removed_image_urls = list(existing_image_urls - next_image_urls)
         db.execute(
-            """UPDATE nodes SET title=?, description=?, type=?, time=?, day=?, date=?, city=?, address=?, lat=?, lng=?, status=?, image_url=?, image_urls=?,
+            """UPDATE nodes SET title=?, description=?, type=?, time=?, day=?, date=?, end_time=?, end_day=?, end_date=?, city=?, address=?, lat=?, lng=?, status=?, image_url=?, image_urls=?,
             transport_mode=?, departure_place=?, arrival_place=?, arrival_time=?, arrival_date=?, service_number=?, duration=?,
             departure_lat=?, departure_lng=?, arrival_lat=?, arrival_lng=?
             WHERE id=? AND trip_slug=?""",
@@ -873,7 +894,13 @@ def delete_node(slug, node_id):
 @app.post("/api/trips/<slug>/auto-connect")
 def auto_connect(slug):
     with connection() as db:
-        nodes = list(db.execute("SELECT id, day, lat, lng FROM nodes WHERE trip_slug = ? AND type NOT IN ('transport', 'transfer') ORDER BY day, time", (slug,)))
+        nodes = list(db.execute(
+            """SELECT id, day, lat, lng FROM nodes
+            WHERE trip_slug = ? AND type NOT IN ('transport', 'transfer')
+            AND status != 'unscheduled' AND day > 0 AND time != ''
+            ORDER BY day, time""",
+            (slug,),
+        ))
         db.execute("DELETE FROM edges WHERE trip_slug = ?", (slug,))
         generated = []
         for index, current in enumerate(nodes[:-1]):

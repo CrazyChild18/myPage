@@ -4,6 +4,7 @@ import ImagePreviewModal from '../ImagePreviewModal/ImagePreviewModal';
 import TransportTicket from '../TransportTicket/TransportTicket';
 import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryNode, ItineraryType } from '../../types';
+import { compareItineraryNodes, isScheduledNode } from '../../utils/itinerary';
 
 const meta: Record<Exclude<ItineraryType, 'transport'>, { label: string; tone: string }> = {
   transfer: { label: '转机', tone: 'bg-sky-50 text-sky-700' },
@@ -23,8 +24,9 @@ export default function Timeline() {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
   const scrollEndTimer = useRef<number | null>(null);
-  const days = Array.from(new Set(nodes.map((node) => node.day))).sort((a, b) => a - b);
-  const filtered = nodes.filter((node) => activeDay === 'all' || node.day === activeDay).sort((a, b) => a.day - b.day || a.time.localeCompare(b.time));
+  const scheduledNodes = nodes.filter(isScheduledNode);
+  const days = Array.from(new Set(scheduledNodes.map((node) => node.day))).sort((a, b) => a - b);
+  const filtered = scheduledNodes.filter((node) => activeDay === 'all' || node.day === activeDay).sort(compareItineraryNodes);
 
   const setCardRef = useCallback((id: string, element: HTMLDivElement | null) => {
     if (element) cardRefs.current.set(id, element);
@@ -72,7 +74,7 @@ export default function Timeline() {
       )}
 
       <div className="mb-3 shrink-0 rounded-2xl border border-white/50 bg-white/40 p-3 shadow-lg backdrop-blur-md">
-        <div className="mb-2 flex items-center justify-between text-xs font-bold text-slate-800"><span>行程时间线</span><span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[10px] text-indigo-700">{nodes.filter((node) => node.type !== 'transport').length} 个地点 · {nodes.filter((node) => node.type === 'transport').length} 段交通</span></div>
+        <div className="mb-2 flex items-center justify-between text-xs font-bold text-slate-800"><span>行程时间线</span><span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[10px] text-indigo-700">{scheduledNodes.filter((node) => node.type !== 'transport').length} 个地点 · {scheduledNodes.filter((node) => node.type === 'transport').length} 段交通</span></div>
         <div className="grid grid-cols-4 gap-1.5"><button onClick={() => setActiveDay('all')} className={`rounded-xl border py-1.5 text-xs font-semibold ${activeDay === 'all' ? 'border-slate-900 bg-slate-900 text-white' : 'border-white bg-white/50 text-slate-700'}`}>全览</button>{days.map((day) => <button key={day} onClick={() => setActiveDay(day)} className={`rounded-xl border py-1.5 text-xs font-semibold ${activeDay === day ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-white bg-white/50 text-slate-700'}`}>D{day}</button>)}</div>
       </div>
 

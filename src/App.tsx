@@ -48,9 +48,12 @@ export default function App() {
 
   const handleTripsLoaded = useCallback((trips: TripSummary[]) => setHomeTrips(trips), []);
   const showingMap = !selectedTripSlug || activeTab === 'explore';
+  const fixedAdminShell = Boolean(selectedTripSlug && activeTab === 'admin');
+  const tripHeaderSpacing = 'px-4 sm:px-6 lg:px-8';
+  const tripMainSpacing = activeTab === 'admin' ? 'px-4 pb-4 pt-3 sm:px-6 lg:px-8' : 'px-4 py-5 sm:px-6 lg:px-8';
 
   return (
-    <div className={`relative min-h-screen overflow-hidden bg-slate-100 text-slate-800 antialiased print:bg-white ${showingMap ? 'h-screen' : ''}`}>
+    <div className={`relative min-h-screen overflow-hidden bg-slate-100 text-slate-800 antialiased print:bg-white ${showingMap || fixedAdminShell ? 'h-screen' : ''} ${fixedAdminShell ? 'flex flex-col' : ''}`}>
       {showingMap && (
         <div className="absolute inset-0">
           <MapView
@@ -73,7 +76,7 @@ export default function App() {
         />
       )}
 
-      {selectedTripSlug && <header className={`z-[1100] mx-auto w-full px-4 pt-4 sm:px-6 lg:px-8 print:hidden ${activeTab === 'explore' ? 'absolute inset-x-0 top-0 max-w-none' : 'relative max-w-7xl'}`}>
+      {selectedTripSlug && <header className={`z-[1100] mx-auto w-full shrink-0 pt-4 print:hidden ${tripHeaderSpacing} ${activeTab === 'explore' || activeTab === 'admin' ? 'max-w-none' : 'max-w-7xl'} ${activeTab === 'explore' ? 'absolute inset-x-0 top-0' : 'relative'}`}>
         <div className="flex flex-col items-center justify-between gap-3 rounded-2xl border border-white/60 bg-white/65 px-4 py-3 shadow-xl backdrop-blur-2xl md:flex-row">
           <div className="flex w-full min-w-0 items-center gap-3 md:w-auto">
             <button
@@ -125,7 +128,7 @@ export default function App() {
 
       {selectedTripSlug && activeTab === 'explore' && <ExploreView />}
 
-      {selectedTripSlug && activeTab !== 'explore' && <main className="relative z-10 mx-auto w-full max-w-7xl px-4 py-5 sm:px-6 lg:px-8 print:px-0">
+      {selectedTripSlug && activeTab !== 'explore' && <main className={`relative z-10 mx-auto w-full print:px-0 ${tripMainSpacing} ${activeTab === 'admin' ? 'min-h-0 flex-1 overflow-hidden max-w-none' : 'max-w-7xl'}`}>
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
@@ -133,7 +136,7 @@ export default function App() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.22 }}
-            className="w-full"
+            className={`w-full ${activeTab === 'admin' ? 'h-full min-h-0' : ''}`}
           >
             {activeTab === 'admin' && <AdminView />}
             {activeTab === 'detail' && <DetailView />}

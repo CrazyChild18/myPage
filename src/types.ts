@@ -4,7 +4,7 @@
  */
 
 export type ItineraryType = 'transport' | 'transfer' | 'hotel' | 'restaurant' | 'sightseeing' | 'leisure' | 'shopping';
-export type TransportMode = 'flight' | 'high_speed_rail' | 'train' | 'bus' | 'ferry' | 'other';
+export type TransportMode = 'flight' | 'high_speed_rail' | 'train' | 'car' | 'bus' | 'subway' | 'ferry' | 'other';
 
 export interface ItineraryNode {
   id: string;
@@ -14,6 +14,9 @@ export interface ItineraryNode {
   time: string; // e.g., "09:00"
   day: number; // e.g., 1, 2, 3
   date: string; // e.g., "2026-09-26"
+  end_time?: string;
+  end_day?: number;
+  end_date?: string;
   city?: string;
   address?: string;
   image_url?: string;
@@ -31,7 +34,7 @@ export interface ItineraryNode {
   duration?: string;
   lat: number;
   lng: number;
-  status: 'completed' | 'ongoing' | 'planned';
+  status: 'completed' | 'ongoing' | 'planned' | 'unscheduled';
 }
 
 export interface ItineraryEdge {

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { ItineraryEdge, ItineraryNode, Trip, TripResponse } from '../types';
+import { compareItineraryNodes, isScheduledNode } from '../utils/itinerary';
 
 interface ItineraryState {
   selectedTripSlug: string | null;
@@ -43,9 +44,9 @@ const request = async <T>(url: string, options?: RequestInit): Promise<T> => {
 const applyTrip = (data: TripResponse) => ({
   selectedTripSlug: data.slug,
   trip: tripOnly(data),
-  nodes: data.nodes,
+  nodes: [...data.nodes].sort(compareItineraryNodes),
   edges: data.edges,
-  activeNodeId: data.nodes[0]?.id || null,
+  activeNodeId: data.nodes.find(isScheduledNode)?.id || data.nodes[0]?.id || null,
   activeDay: 'all' as const,
   loading: false,
   saving: false,
@@ -107,7 +108,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
         body: JSON.stringify(node),
       });
       set((state) => ({
-        nodes: [...state.nodes, created].sort((a, b) => a.day - b.day || a.time.localeCompare(b.time)),
+        nodes: [...state.nodes, created].sort(compareItineraryNodes),
         activeNodeId: created.id,
         saving: false,
       }));
@@ -125,7 +126,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
     const optimistic = { ...current, ...updatedFields };
     set((state) => ({
       nodes: state.nodes.map((node) => node.id === id ? optimistic : node)
-        .sort((a, b) => a.day - b.day || a.time.localeCompare(b.time)),
+        .sort(compareItineraryNodes),
       saving: true,
       error: null,
     }));
@@ -136,7 +137,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
       });
       set((state) => ({
         nodes: state.nodes.map((node) => node.id === id ? updated : node)
-          .sort((a, b) => a.day - b.day || a.time.localeCompare(b.time)),
+          .sort(compareItineraryNodes),
         saving: false,
       }));
     } catch (error) {
@@ -173,7 +174,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
   setActiveNodeId: (id) => set({ activeNodeId: id }),
   setHoveredEdgeId: (id) => set({ hoveredEdgeId: id }),
   setActiveDay: (day) => set((state) => {
-    const firstNode = state.nodes.find((node) => day === 'all' || node.day === day);
+    const firstNode = state.nodes.find((node) => isScheduledNode(node) && (day === 'all' || node.day === day));
     return { activeDay: day, activeNodeId: firstNode?.id || state.activeNodeId };
   }),
 
