@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 backend/*.db
+!backend/voyageplanner.db
 backend/uploads/
 __pycache__/
 *.pyc

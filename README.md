@@ -31,7 +31,7 @@ npm run dev
 
 ## 数据库同步
 
-线上 Docker volume 中的 SQLite 数据库是准源，仓库不提交 `backend/voyageplanner.db`，本地旧库也不应覆盖服务器。
+`backend/voyageplanner.db` 会提交到 GitHub，用来让本地、GitHub 和服务器保留同一份行程数据快照。线上 Docker volume 中的 SQLite 数据库是日常准源；同步时先从服务器拉取当前 `/data/voyageplanner.db`，再提交到 GitHub，避免本地旧库覆盖服务器数据。
 
 如需把服务器当前数据拉到本地调试，运行：
 
@@ -39,7 +39,9 @@ npm run dev
 bash scripts/pull-server-db.sh
 ```
 
-脚本只从服务器容器拉取 `/data/voyageplanner.db` 到本地 `backend/voyageplanner.db`，并会先把已有本地库备份到 `.runtime/db-backups/`。SSH 密码不写入仓库，按提示输入即可。
+脚本只从服务器容器拉取 `/data/voyageplanner.db` 到本地 `backend/voyageplanner.db`，并会先把已有本地库备份到 `.runtime/db-backups/`。SSH 密码不写入仓库，按提示输入即可。确认后提交 `backend/voyageplanner.db`，GitHub 就会以服务器当前数据为准。
+
+Docker 构建仍会通过 `.dockerignore` 排除 `backend/*.db`，线上运行始终读取 volume 中的 `/data/voyageplanner.db`。
 
 ## Docker 部署
 

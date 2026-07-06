@@ -25,4 +25,4 @@ scp -P "$SSH_PORT" "$SSH_TARGET:${remote_tmp}" "$LOCAL_DB"
 ssh -p "$SSH_PORT" "$SSH_TARGET" "rm -f ${remote_tmp}"
 
 echo "Pulled server database into ${LOCAL_DB}"
-echo "Local database files are intentionally ignored by Git."
+echo "Review and commit ${LOCAL_DB} when you want GitHub to match the server database."
