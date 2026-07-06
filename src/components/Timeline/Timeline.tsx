@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { CheckCircle2, Circle, Clock, Image as ImageIcon, MapPin } from 'lucide-react';
+import { Clock, Image as ImageIcon, MapPin } from 'lucide-react';
 import ImagePreviewModal from '../ImagePreviewModal/ImagePreviewModal';
 import TransportTicket from '../TransportTicket/TransportTicket';
 import { useItineraryStore } from '../../store/useItineraryStore';
@@ -18,7 +18,7 @@ const imagesOf = (node: ItineraryNode) => node.image_urls?.length ? node.image_u
 const isTicketTransport = (node: ItineraryNode) => Boolean(node.transport_mode || node.departure_place || node.arrival_place || /航班|高铁|火车|飞往|→/.test(node.title));
 
 export default function Timeline() {
-  const { nodes, activeNodeId, setActiveNodeId, activeDay, setActiveDay, updateNode } = useItineraryStore();
+  const { nodes, activeNodeId, setActiveNodeId, activeDay, setActiveDay } = useItineraryStore();
   const [preview, setPreview] = useState<{ node: ItineraryNode; index: number } | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
@@ -92,9 +92,8 @@ export default function Timeline() {
               <div className="flex items-center justify-between gap-2"><span className="flex items-center gap-1 text-[9px] font-bold text-slate-400"><Clock className="h-3 w-3" />{node.time} · D{node.day} · {node.date.slice(5)}</span><span className={`rounded-full px-2 py-0.5 text-[8px] font-black ${nodeMeta.tone}`}>{nodeMeta.label}</span></div>
               <h4 className="mt-1.5 text-sm font-black text-slate-900">{node.title}</h4>
               <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-slate-500">{node.description || node.address || '暂无说明'}</p>
-              <div className="mt-2 flex items-center justify-between border-t border-slate-100 pt-2">
+              <div className="mt-2 border-t border-slate-100 pt-2">
                 <span className="flex min-w-0 items-center gap-1 truncate text-[9px] font-semibold text-slate-400"><MapPin className="h-3 w-3 shrink-0" />{node.city || node.address || '已选择地点'}</span>
-                <button onClick={(event) => { event.stopPropagation(); void updateNode(node.id, { status: node.status === 'completed' ? 'planned' : 'completed' }); }} className="text-slate-400">{node.status === 'completed' ? <CheckCircle2 className="h-4 w-4 text-indigo-600" /> : <Circle className="h-4 w-4" />}</button>
               </div>
             </div>
           </article>;

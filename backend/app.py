@@ -5,7 +5,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -231,11 +231,27 @@ def reset_trip(db):
     )
 
 
+def image_urls_from_source(source):
+    item = dict(source)
+    image_urls = item.get("image_urls")
+    if isinstance(image_urls, str):
+        try:
+            image_urls = json.loads(image_urls)
+        except json.JSONDecodeError:
+            image_urls = [image_urls]
+    elif image_urls and not isinstance(image_urls, list):
+        image_urls = [image_urls]
+
+    urls = [str(url).strip() for url in (image_urls or []) if str(url).strip()]
+    legacy_image = str(item.get("image_url", "")).strip()
+    if legacy_image and legacy_image not in urls:
+        urls.insert(0, legacy_image)
+    return urls
+
+
 def row_to_node(row):
     item = dict(row)
-    item["image_urls"] = json.loads(item.get("image_urls") or "[]")
-    if not item["image_urls"] and item.get("image_url"):
-        item["image_urls"] = [item["image_url"]]
+    item["image_urls"] = image_urls_from_source(item)
     return item
 
 
@@ -665,6 +681,58 @@ def hybrid_geocode_reverse():
         return jsonify({"error": "地址查询服务暂时不可用"}), 502
 
 
+def local_upload_filename(url):
+    parsed = urlparse(str(url).strip())
+    if parsed.scheme or parsed.netloc:
+        return None
+    path = unquote(parsed.path)
+    if not path.startswith("/uploads/"):
+        return None
+    filename = path.removeprefix("/uploads/")
+    if not filename or "/" in filename or "\\" in filename:
+        return None
+    if Path(filename).suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
+        return None
+    return filename
+
+
+def local_upload_referenced(db, url):
+    for row in db.execute("SELECT image_url, image_urls FROM nodes"):
+        if url in image_urls_from_source(row):
+            return True
+    return False
+
+
+def delete_local_upload(url):
+    filename = local_upload_filename(url)
+    if not filename:
+        return False
+    upload_root = UPLOAD_DIR.resolve()
+    target = (upload_root / filename).resolve()
+    try:
+        target.relative_to(upload_root)
+    except ValueError:
+        return False
+    if not target.is_file():
+        return False
+    try:
+        target.unlink()
+    except OSError as error:
+        app.logger.warning("Failed to delete upload %s: %s", filename, error)
+        return False
+    return True
+
+
+def delete_unreferenced_uploads(urls):
+    deleted = []
+    with connection() as db:
+        for url in sorted(set(urls)):
+            if local_upload_filename(url) and not local_upload_referenced(db, url):
+                if delete_local_upload(url):
+                    deleted.append(url)
+    return deleted
+
+
 @app.post("/api/trips/<slug>/images")
 def upload_trip_image(slug):
     with connection() as db:
@@ -685,6 +753,22 @@ def upload_trip_image(slug):
     return jsonify({"url": f"/uploads/{filename}"}), 201
 
 
+@app.delete("/api/trips/<slug>/images")
+def delete_trip_image(slug):
+    payload = request.get_json(silent=True) or {}
+    url = str(payload.get("url", "")).strip()
+    if not local_upload_filename(url):
+        return jsonify({"error": "只能删除本项目上传的图片"}), 400
+
+    with connection() as db:
+        if not db.execute("SELECT 1 FROM trips WHERE slug = ?", (slug,)).fetchone():
+            return jsonify({"error": "Trip not found"}), 404
+        if local_upload_referenced(db, url):
+            return jsonify({"deleted": False})
+
+    return jsonify({"deleted": delete_local_upload(url)})
+
+
 @app.get("/uploads/<path:filename>")
 def uploaded_image(filename):
     return send_from_directory(UPLOAD_DIR, filename)
@@ -695,16 +779,7 @@ def node_payload(payload, existing=None):
     required = ("title", "type", "time", "day", "date", "lat", "lng", "status")
     if any(source.get(key) in (None, "") for key in required):
         raise ValueError("Missing required node fields")
-    image_urls = source.get("image_urls")
-    if isinstance(image_urls, str):
-        try:
-            image_urls = json.loads(image_urls)
-        except json.JSONDecodeError:
-            image_urls = [image_urls]
-    image_urls = [str(url).strip() for url in (image_urls or []) if str(url).strip()]
-    legacy_image = str(source.get("image_url", "")).strip()
-    if legacy_image and legacy_image not in image_urls:
-        image_urls.insert(0, legacy_image)
+    image_urls = image_urls_from_source(source)
 
     return {
         "title": str(source["title"]).strip(),
@@ -757,14 +832,18 @@ def create_node(slug):
 @app.put("/api/trips/<slug>/nodes/<node_id>")
 def update_node(slug, node_id):
     payload = request.get_json(force=True)
+    removed_image_urls = []
     with connection() as db:
         existing = db.execute("SELECT * FROM nodes WHERE id = ? AND trip_slug = ?", (node_id, slug)).fetchone()
         if not existing:
             return jsonify({"error": "Node not found"}), 404
+        existing_image_urls = set(image_urls_from_source(existing))
         try:
             item = node_payload(payload, existing)
         except (ValueError, TypeError) as error:
             return jsonify({"error": str(error)}), 400
+        next_image_urls = set(image_urls_from_source(item))
+        removed_image_urls = list(existing_image_urls - next_image_urls)
         db.execute(
             """UPDATE nodes SET title=?, description=?, type=?, time=?, day=?, date=?, city=?, address=?, lat=?, lng=?, status=?, image_url=?, image_urls=?,
             transport_mode=?, departure_place=?, arrival_place=?, arrival_time=?, arrival_date=?, service_number=?, duration=?,
@@ -772,14 +851,23 @@ def update_node(slug, node_id):
             WHERE id=? AND trip_slug=?""",
             (*item.values(), node_id, slug),
         )
+    if removed_image_urls:
+        delete_unreferenced_uploads(removed_image_urls)
     return jsonify(row_to_node({"id": node_id, **item}))
 
 
 @app.delete("/api/trips/<slug>/nodes/<node_id>")
 def delete_node(slug, node_id):
+    removed_image_urls = []
     with connection() as db:
-        result = db.execute("DELETE FROM nodes WHERE id = ? AND trip_slug = ?", (node_id, slug))
-    return ("", 204) if result.rowcount else (jsonify({"error": "Node not found"}), 404)
+        existing = db.execute("SELECT image_url, image_urls FROM nodes WHERE id = ? AND trip_slug = ?", (node_id, slug)).fetchone()
+        if not existing:
+            return jsonify({"error": "Node not found"}), 404
+        removed_image_urls = image_urls_from_source(existing)
+        db.execute("DELETE FROM nodes WHERE id = ? AND trip_slug = ?", (node_id, slug))
+    if removed_image_urls:
+        delete_unreferenced_uploads(removed_image_urls)
+    return "", 204
 
 
 @app.post("/api/trips/<slug>/auto-connect")

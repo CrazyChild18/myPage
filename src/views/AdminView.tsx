@@ -20,6 +20,7 @@ export default function AdminView() {
   const [message, setMessage] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [imageUrlInput, setImageUrlInput] = useState('');
+  const [pendingUploadUrls, setPendingUploadUrls] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sortedNodes = useMemo(() => [...nodes].sort((a, b) => a.day - b.day || a.time.localeCompare(b.time)), [nodes]);
   const inputClass = 'mt-1.5 w-full rounded-xl border border-slate-200 bg-white/85 px-3 py-2.5 text-xs outline-none transition focus:border-indigo-400';
@@ -29,16 +30,33 @@ export default function AdminView() {
     window.setTimeout(() => setMessage(null), 3000);
   };
 
-  const reset = () => {
+  const cleanupUploadedImage = async (url: string) => {
+    if (!selectedTripSlug || !url.startsWith('/uploads/')) return;
+    await fetch(`/api/trips/${selectedTripSlug}/images`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    }).catch(() => undefined);
+  };
+
+  const cleanupPendingUploads = (urls = pendingUploadUrls) => {
+    urls.forEach((url) => void cleanupUploadedImage(url));
+  };
+
+  const reset = ({ cleanupPending = true }: { cleanupPending?: boolean } = {}) => {
+    if (cleanupPending) cleanupPendingUploads();
     setEditingId(null);
     setForm(emptyForm());
     setImageUrlInput('');
+    setPendingUploadUrls([]);
   };
 
   const edit = (node: ItineraryNode) => {
+    cleanupPendingUploads();
     const { id, ...values } = node;
     setEditingId(id);
     setForm({ ...emptyForm(), ...values, image_urls: node.image_urls?.length ? node.image_urls : node.image_url ? [node.image_url] : [] });
+    setPendingUploadUrls([]);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -48,7 +66,7 @@ export default function AdminView() {
       if (editingId) await updateNode(editingId, form);
       else await addNode({ id: `node-${Date.now()}`, ...form });
       toast(editingId ? `已保存：${form.title}` : `已新增：${form.title}`);
-      reset();
+      reset({ cleanupPending: false });
     } catch {
       toast('保存失败，请检查输入内容');
     }
@@ -64,6 +82,7 @@ export default function AdminView() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || '图片上传失败');
       addImageUrl(result.url);
+      setPendingUploadUrls((current) => current.includes(result.url) ? current : [...current, result.url]);
       toast('图片已上传');
     } catch (error) {
       toast(error instanceof Error ? error.message : '图片上传失败');
@@ -82,6 +101,17 @@ export default function AdminView() {
       return { ...current, image_url: next[0] || '', image_urls: next };
     });
     setImageUrlInput('');
+  };
+
+  const removeImage = (url: string) => {
+    setForm((current) => {
+      const next = (current.image_urls || []).filter((image) => image !== url);
+      return { ...current, image_urls: next, image_url: next[0] || '' };
+    });
+    if (pendingUploadUrls.includes(url)) {
+      setPendingUploadUrls((current) => current.filter((image) => image !== url));
+      void cleanupUploadedImage(url);
+    }
   };
 
   const pasteImage = async (event: React.ClipboardEvent<HTMLElement>) => {
@@ -112,7 +142,7 @@ export default function AdminView() {
         <form onSubmit={submit} className="space-y-4 rounded-2xl border border-white/50 bg-white/45 p-5 shadow-xl lg:col-span-5">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
             <h3 className="font-bold text-slate-800">{editingId ? '编辑行程内容' : '添加行程内容'}</h3>
-            {editingId && <button type="button" onClick={reset} className="text-xs font-semibold text-red-600">取消编辑</button>}
+            {editingId && <button type="button" onClick={() => reset()} className="text-xs font-semibold text-red-600">取消编辑</button>}
           </div>
 
           <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
@@ -155,7 +185,7 @@ export default function AdminView() {
 
           {form.type !== 'transport' && <div tabIndex={0} onPaste={pasteImage} className="rounded-2xl border border-dashed border-indigo-200 bg-indigo-50/40 p-3 outline-none focus:border-indigo-400">
             <div className="grid grid-cols-3 gap-2">
-              {(form.image_urls || []).map((url, index) => <div key={url} className="group relative"><img src={url} alt="" className="h-24 w-full rounded-xl object-cover" />{index === 0 && <span className="absolute bottom-1 left-1 rounded bg-slate-950/70 px-1.5 py-0.5 text-[8px] font-bold text-white">封面</span>}<button type="button" onClick={() => setForm((current) => { const next = (current.image_urls || []).filter((image) => image !== url); return { ...current, image_urls: next, image_url: next[0] || '' }; })} className="absolute right-1 top-1 rounded-full bg-slate-950/70 p-1 text-white opacity-0 group-hover:opacity-100"><X className="h-3 w-3" /></button></div>)}
+              {(form.image_urls || []).map((url, index) => <div key={url} className="group relative"><img src={url} alt="" className="h-24 w-full rounded-xl object-cover" />{index === 0 && <span className="absolute bottom-1 left-1 rounded bg-slate-950/70 px-1.5 py-0.5 text-[8px] font-bold text-white">封面</span>}<button type="button" onClick={() => removeImage(url)} className="absolute right-1 top-1 rounded-full bg-slate-950/70 p-1 text-white opacity-0 group-hover:opacity-100"><X className="h-3 w-3" /></button></div>)}
             </div>
             {!(form.image_urls || []).length && <div className="flex min-h-20 flex-col items-center justify-center text-center"><Clipboard className="h-5 w-5 text-indigo-500" /><div className="mt-1 text-[10px] text-slate-500">点击后粘贴图片，或使用下方上传</div></div>}
             <div className="mt-3 flex gap-2"><div className="relative min-w-0 flex-1"><Image className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input value={imageUrlInput} onChange={(e) => setImageUrlInput(e.target.value)} placeholder="图片 URL" className={`${inputClass} mt-0 pl-9`} /></div><button type="button" onClick={() => addImageUrl()} className="rounded-xl border border-indigo-200 bg-white px-3 text-[11px] font-bold text-indigo-700"><Plus className="h-3.5 w-3.5" /></button><input ref={fileInputRef} type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && void uploadImage(e.target.files[0])} className="hidden" /><button type="button" disabled={uploading} onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1 rounded-xl bg-indigo-600 px-3 text-[11px] font-bold text-white">{uploading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}上传</button></div>

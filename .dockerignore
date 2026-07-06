@@ -1,6 +1,7 @@
 node_modules
 dist
 backend/*.db
+!backend/voyageplanner.db
 .git
 .DS_Store
 .venv
