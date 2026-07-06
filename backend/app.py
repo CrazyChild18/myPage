@@ -100,6 +100,7 @@ def init_database():
                 end_time TEXT NOT NULL DEFAULT '',
                 end_day INTEGER NOT NULL DEFAULT 0,
                 end_date TEXT NOT NULL DEFAULT '',
+                timezone TEXT NOT NULL DEFAULT '',
                 city TEXT NOT NULL DEFAULT '',
                 address TEXT NOT NULL DEFAULT '',
                 lat REAL NOT NULL,
@@ -110,6 +111,8 @@ def init_database():
                 ,transport_mode TEXT NOT NULL DEFAULT ''
                 ,departure_place TEXT NOT NULL DEFAULT ''
                 ,arrival_place TEXT NOT NULL DEFAULT ''
+                ,departure_timezone TEXT NOT NULL DEFAULT ''
+                ,arrival_timezone TEXT NOT NULL DEFAULT ''
                 ,arrival_time TEXT NOT NULL DEFAULT ''
                 ,arrival_date TEXT NOT NULL DEFAULT ''
                 ,service_number TEXT NOT NULL DEFAULT ''
@@ -157,6 +160,9 @@ def init_database():
                 db.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         if "end_day" not in node_columns:
             db.execute("ALTER TABLE nodes ADD COLUMN end_day INTEGER NOT NULL DEFAULT 0")
+        for column in ("timezone", "departure_timezone", "arrival_timezone"):
+            if column not in node_columns:
+                db.execute(f"ALTER TABLE nodes ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         for column in ("departure_lat", "departure_lng", "arrival_lat", "arrival_lng"):
             if column not in node_columns:
                 db.execute(f"ALTER TABLE nodes ADD COLUMN {column} REAL")
@@ -279,7 +285,8 @@ def serialize_trip(db, slug):
         row_to_node(row)
         for row in db.execute(
             """SELECT id, title, description, type, time, day, date, city, address, lat, lng, status,
-            end_time, end_day, end_date, image_url, image_urls, transport_mode, departure_place, arrival_place, arrival_time,
+            end_time, end_day, end_date, timezone, image_url, image_urls, transport_mode, departure_place, arrival_place,
+            departure_timezone, arrival_timezone, arrival_time,
             arrival_date, service_number, duration, departure_lat, departure_lng, arrival_lat, arrival_lng
             FROM nodes WHERE trip_slug = ?
             ORDER BY CASE WHEN status = 'unscheduled' THEN 1 ELSE 0 END, day, time, title""",
@@ -809,6 +816,7 @@ def node_payload(payload, existing=None):
         "end_time": "" if is_unscheduled_point else str(source.get("end_time") or source.get("arrival_time") or source["time"]).strip(),
         "end_day": 0 if is_unscheduled_point else int(source.get("end_day") or source["day"]),
         "end_date": "" if is_unscheduled_point else str(source.get("end_date") or source.get("arrival_date") or source["date"]).strip(),
+        "timezone": str(source.get("timezone", "")).strip(),
         "city": str(source.get("city", "")).strip(),
         "address": str(source.get("address", "")).strip(),
         "lat": float(source["lat"]),
@@ -819,6 +827,8 @@ def node_payload(payload, existing=None):
         "transport_mode": str(source.get("transport_mode", "")).strip(),
         "departure_place": str(source.get("departure_place", "")).strip(),
         "arrival_place": str(source.get("arrival_place", "")).strip(),
+        "departure_timezone": str(source.get("departure_timezone", "")).strip(),
+        "arrival_timezone": str(source.get("arrival_timezone", "")).strip(),
         "arrival_time": str(source.get("arrival_time", "")).strip(),
         "arrival_date": str(source.get("arrival_date", "")).strip(),
         "service_number": str(source.get("service_number", "")).strip(),
@@ -841,10 +851,10 @@ def create_node(slug):
     with connection() as db:
         db.execute(
             """INSERT INTO nodes
-            (id, trip_slug, title, description, type, time, day, date, end_time, end_day, end_date, city, address, lat, lng, status, image_url, image_urls,
-            transport_mode, departure_place, arrival_place, arrival_time, arrival_date, service_number, duration,
+            (id, trip_slug, title, description, type, time, day, date, end_time, end_day, end_date, timezone, city, address, lat, lng, status, image_url, image_urls,
+            transport_mode, departure_place, arrival_place, departure_timezone, arrival_timezone, arrival_time, arrival_date, service_number, duration,
             departure_lat, departure_lng, arrival_lat, arrival_lng)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (node_id, slug, *item.values()),
         )
     return jsonify(row_to_node({"id": node_id, **item})), 201
@@ -866,8 +876,8 @@ def update_node(slug, node_id):
         next_image_urls = set(image_urls_from_source(item))
         removed_image_urls = list(existing_image_urls - next_image_urls)
         db.execute(
-            """UPDATE nodes SET title=?, description=?, type=?, time=?, day=?, date=?, end_time=?, end_day=?, end_date=?, city=?, address=?, lat=?, lng=?, status=?, image_url=?, image_urls=?,
-            transport_mode=?, departure_place=?, arrival_place=?, arrival_time=?, arrival_date=?, service_number=?, duration=?,
+            """UPDATE nodes SET title=?, description=?, type=?, time=?, day=?, date=?, end_time=?, end_day=?, end_date=?, timezone=?, city=?, address=?, lat=?, lng=?, status=?, image_url=?, image_urls=?,
+            transport_mode=?, departure_place=?, arrival_place=?, departure_timezone=?, arrival_timezone=?, arrival_time=?, arrival_date=?, service_number=?, duration=?,
             departure_lat=?, departure_lng=?, arrival_lat=?, arrival_lng=?
             WHERE id=? AND trip_slug=?""",
             (*item.values(), node_id, slug),

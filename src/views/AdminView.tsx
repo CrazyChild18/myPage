@@ -27,6 +27,19 @@ import MapView from '../components/Map/MapView';
 import { useItineraryStore } from '../store/useItineraryStore';
 import { ItineraryNode, ItineraryType, TransportMode } from '../types';
 import { compareItineraryNodes, isScheduledNode, isUnscheduledPointNode } from '../utils/itinerary';
+import {
+  BEIJING_TIMEZONE,
+  DEFAULT_TIMEZONE,
+  TIMEZONE_OPTIONS,
+  beijingRangeText,
+  formatInTimeZone,
+  formatTimeZoneOffset,
+  inferTimeZoneFromLocation,
+  normaliseTimeZone,
+  timeZoneOptionLabel,
+  transportDurationText,
+  zonedTimeToUtcMs,
+} from '../utils/timezone';
 
 const START_MINUTES = 0;
 const END_MINUTES = 24 * 60;
@@ -143,6 +156,7 @@ const emptyForm = ({
     end_time: hasSchedule ? time : '',
     end_day: hasSchedule ? day : 0,
     end_date: hasSchedule ? date : '',
+    timezone: DEFAULT_TIMEZONE,
     city: '',
     address: '',
     lat: 64.1466,
@@ -153,6 +167,8 @@ const emptyForm = ({
     transport_mode: 'flight',
     departure_place: '',
     arrival_place: '',
+    departure_timezone: DEFAULT_TIMEZONE,
+    arrival_timezone: DEFAULT_TIMEZONE,
     arrival_time: isTransport ? '14:00' : '',
     arrival_date: isTransport ? date : '',
     service_number: '',
@@ -262,6 +278,42 @@ const formatDurationText = (minutes: number) => {
   const restMinutes = safe % 60;
   if (!hours) return `${safe}分钟`;
   return restMinutes ? `${hours}小时${restMinutes}分` : `${hours}小时`;
+};
+
+const localOffsetText = (date: string, time: string, timeZone?: string) =>
+  formatTimeZoneOffset(timeZone, zonedTimeToUtcMs(date, time, timeZone));
+
+const nodePointTimeZone = (node: ItineraryNode, fallback = DEFAULT_TIMEZONE) =>
+  normaliseTimeZone(node.timezone || inferTimeZoneFromLocation({
+    place: node.title,
+    city: node.city,
+    address: node.address,
+    lat: node.lat,
+    lng: node.lng,
+    fallback,
+  }));
+
+const nodeDepartureTimeZone = (node: ItineraryNode, fallback = DEFAULT_TIMEZONE) =>
+  normaliseTimeZone(node.departure_timezone || inferTimeZoneFromLocation({
+    place: node.departure_place || node.title,
+    lat: node.departure_lat ?? node.lat,
+    lng: node.departure_lng ?? node.lng,
+    fallback,
+  }));
+
+const nodeArrivalTimeZone = (node: ItineraryNode, fallback = DEFAULT_TIMEZONE) =>
+  normaliseTimeZone(node.arrival_timezone || inferTimeZoneFromLocation({
+    place: node.arrival_place || node.title,
+    lat: node.arrival_lat ?? node.lat,
+    lng: node.arrival_lng ?? node.lng,
+    fallback,
+  }));
+
+const beijingPointTimeText = (node: ItineraryNode, fallback = DEFAULT_TIMEZONE) => {
+  const timeZone = nodePointTimeZone(node, fallback);
+  if (timeZone === BEIJING_TIMEZONE) return '';
+  const value = formatInTimeZone(zonedTimeToUtcMs(node.date, node.time, timeZone), BEIJING_TIMEZONE);
+  return `${value.date === node.date ? '' : `${value.date.slice(5)} `}${value.time}`;
 };
 
 const endFromStart = (
@@ -588,6 +640,7 @@ export default function AdminView() {
   const [dragPreview, setDragPreview] = useState<{ nodeId: string; minutes: number; connected: boolean } | null>(null);
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>('all');
+  const [showBeijingTime, setShowBeijingTime] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scheduleGridRef = useRef<HTMLDivElement>(null);
   const resizeStateRef = useRef<{ node: ItineraryNode; startY: number; startDuration: number; latestDuration: number; maxDuration: number } | null>(null);
@@ -601,6 +654,28 @@ export default function AdminView() {
     () => [...nodes].sort(compareItineraryNodes),
     [nodes],
   );
+  const dayTimeZones = useMemo(() => {
+    const map = new Map<number, string>();
+    let activeTimeZone = DEFAULT_TIMEZONE;
+    dayNumbers.forEach((day) => {
+      const sameDayNodes = sortedNodes.filter((node) => isScheduledNode(node) && scheduleSegmentForDay(node, day, dateByDay, trip?.start_date));
+      const arrivingTransports = sameDayNodes.filter((node) => {
+        if (node.type !== 'transport') return false;
+        return (node.end_day || dayForDate(node.end_date || node.arrival_date, dateByDay, trip?.start_date) || node.day) === day;
+      });
+      const finalArrival = arrivingTransports.at(-1);
+      const firstPoint = sameDayNodes.find((node) => node.type !== 'transport');
+      const firstTransport = sameDayNodes.find((node) => node.type === 'transport');
+
+      if (finalArrival) activeTimeZone = nodeArrivalTimeZone(finalArrival, activeTimeZone);
+      else if (firstPoint) activeTimeZone = nodePointTimeZone(firstPoint, activeTimeZone);
+      else if (firstTransport) activeTimeZone = nodeDepartureTimeZone(firstTransport, activeTimeZone);
+
+      map.set(day, activeTimeZone);
+    });
+    return map;
+  }, [dateByDay, dayNumbers, sortedNodes, trip?.start_date]);
+  const currentDayTimezone = dayTimeZones.get(currentDay) || DEFAULT_TIMEZONE;
   const editingNode = useMemo(() => editingId ? nodes.find((node) => node.id === editingId) || null : null, [editingId, nodes]);
   const editingExistingTransport = editingNode?.type === 'transport';
   const currentDayNodes = useMemo(
@@ -624,6 +699,28 @@ export default function AdminView() {
     () => layoutScheduleEvents(scheduledDisplayNodes, currentDay, dateByDay, trip?.start_date),
     [currentDay, dateByDay, scheduledDisplayNodes, trip?.start_date],
   );
+  const currentDayTimeZoneTransitions = useMemo(
+    () => scheduleEvents
+      .filter((event) => event.node.type === 'transport')
+      .map((event) => {
+        const departureTimezone = nodeDepartureTimeZone(event.node, currentDayTimezone);
+        const arrivalTimezone = nodeArrivalTimeZone(event.node, departureTimezone);
+        const arrivalDay = event.node.end_day || dayForDate(event.node.end_date || event.node.arrival_date, dateByDay, trip?.start_date) || event.node.day;
+        if (departureTimezone === arrivalTimezone || arrivalDay !== currentDay) return null;
+        const minutes = Math.max(START_MINUTES, Math.min(END_MINUTES, parseTime(event.node.end_time || event.node.arrival_time || event.displayEnd)));
+        return {
+          id: event.node.id,
+          minutes,
+          departureTimezone,
+          arrivalTimezone,
+        };
+      })
+      .filter((item): item is { id: string; minutes: number; departureTimezone: string; arrivalTimezone: string } => Boolean(item)),
+    [currentDay, currentDayTimezone, dateByDay, scheduleEvents, trip?.start_date],
+  );
+  const currentDayTimeZoneText = currentDayTimeZoneTransitions.length
+    ? `多时区 · ${currentDayTimeZoneTransitions.map((item) => `${timeZoneOptionLabel(item.departureTimezone)}→${timeZoneOptionLabel(item.arrivalTimezone)}`).join(' · ')}`
+    : `${timeZoneOptionLabel(currentDayTimezone)} ${formatTimeZoneOffset(currentDayTimezone, zonedTimeToUtcMs(currentDate, '12:00', currentDayTimezone))}`;
   const libraryNodes = useMemo(() => sortedNodes.filter(isUnscheduledPointNode), [sortedNodes]);
   const libraryTypeCounts = useMemo(
     () => libraryNodes.reduce<Partial<Record<ItineraryType, number>>>((counts, node) => {
@@ -691,16 +788,43 @@ export default function AdminView() {
       const endDate = draft.arrival_date || draft.end_date || date;
       const endDay = dayForDate(endDate, dateByDay, trip?.start_date) || draft.end_day || day;
       const endTime = draft.arrival_time || draft.end_time || time;
+      const departureTimezone = normaliseTimeZone(draft.departure_timezone || inferTimeZoneFromLocation({
+        place: draft.departure_place || draft.title,
+        lat: draft.departure_lat ?? draft.lat,
+        lng: draft.departure_lng ?? draft.lng,
+        fallback: currentDayTimezone,
+      }));
+      const arrivalTimezone = normaliseTimeZone(draft.arrival_timezone || inferTimeZoneFromLocation({
+        place: draft.arrival_place || draft.title,
+        lat: draft.arrival_lat ?? draft.lat,
+        lng: draft.arrival_lng ?? draft.lng,
+        fallback: departureTimezone,
+      }));
+      const duration = draft.duration || transportDurationText({
+        date,
+        time,
+        end_date: endDate,
+        end_time: endTime,
+        arrival_date: endDate,
+        arrival_time: endTime,
+        departure_timezone: departureTimezone,
+        arrival_timezone: arrivalTimezone,
+      });
       return {
         ...draft,
         status: draft.status === 'unscheduled' ? 'planned' : draft.status,
         day,
         date,
         time,
+        timezone: arrivalTimezone,
+        departure_timezone: departureTimezone,
+        arrival_timezone: arrivalTimezone,
         end_day: endDay,
         end_date: endDate,
         end_time: endTime,
         arrival_date: endDate,
+        arrival_time: endTime,
+        duration,
         lat: draft.arrival_lat ?? draft.lat,
         lng: draft.arrival_lng ?? draft.lng,
       };
@@ -715,6 +839,14 @@ export default function AdminView() {
       : { end_day: 0, end_date: '', end_time: '' };
     return {
       ...draft,
+      timezone: normaliseTimeZone(draft.timezone || inferTimeZoneFromLocation({
+        place: draft.title,
+        city: draft.city,
+        address: draft.address,
+        lat: draft.lat,
+        lng: draft.lng,
+        fallback: currentDayTimezone,
+      })),
       day: scheduled ? draft.day : fallbackDay,
       date: scheduled ? draft.date : fallbackDate,
       time: scheduled ? draft.time : fallbackTime,
@@ -723,6 +855,8 @@ export default function AdminView() {
       transport_mode: undefined,
       departure_place: '',
       arrival_place: '',
+      departure_timezone: '',
+      arrival_timezone: '',
       arrival_time: '',
       arrival_date: '',
       service_number: '',
@@ -736,7 +870,12 @@ export default function AdminView() {
   const reset = ({ cleanupPending = true, kind = 'point', time = '12:00', scheduled = false }: { cleanupPending?: boolean; kind?: 'point' | 'transport'; time?: string; scheduled?: boolean } = {}) => {
     if (cleanupPending) cleanupPendingUploads();
     setEditingId(null);
-    setForm(emptyForm({ day: currentDay, date: currentDate, time, kind, scheduled }));
+    setForm({
+      ...emptyForm({ day: currentDay, date: currentDate, time, kind, scheduled }),
+      timezone: currentDayTimezone,
+      departure_timezone: currentDayTimezone,
+      arrival_timezone: currentDayTimezone,
+    });
     setImageUrlInput('');
     setPendingUploadUrls([]);
   };
@@ -845,6 +984,7 @@ export default function AdminView() {
       ...current,
       day,
       date: nextDate,
+      timezone: current.type === 'transport' ? current.timezone : current.timezone || currentDayTimezone,
       ...(current.type !== 'transport' && isScheduledNode({ id: editingId || 'draft', ...current, day, date: nextDate })
         ? endFromStart(day, nextDate, current.time, eventDurationMinutes({ id: editingId || 'draft', ...current, day, date: nextDate }), dateByDay)
         : {}),
@@ -878,6 +1018,14 @@ export default function AdminView() {
       day,
       date,
       time,
+      timezone: normaliseTimeZone(node.timezone || inferTimeZoneFromLocation({
+        place: node.title,
+        city: node.city,
+        address: node.address,
+        lat: node.lat,
+        lng: node.lng,
+        fallback: dayTimeZones.get(day) || currentDayTimezone,
+      })),
       ...endFromStart(day, date, time, eventDurationMinutes(node), dateByDay),
       status: node.status === 'unscheduled' ? 'planned' : node.status,
     };
@@ -1059,6 +1207,9 @@ export default function AdminView() {
         day: current.day || currentDay,
         date: current.date || currentDate,
         time: current.time || '12:00',
+        timezone: current.timezone || currentDayTimezone,
+        departure_timezone: current.departure_timezone || current.timezone || currentDayTimezone,
+        arrival_timezone: current.arrival_timezone || current.timezone || currentDayTimezone,
         status: current.status === 'unscheduled' ? 'planned' : current.status,
         arrival_date: current.arrival_date || current.date || currentDate,
         arrival_time: current.arrival_time || '14:00',
@@ -1078,6 +1229,9 @@ export default function AdminView() {
       end_day: current.type === 'transport' ? 0 : current.end_day,
       end_date: current.type === 'transport' ? '' : current.end_date,
       end_time: current.type === 'transport' ? '' : current.end_time,
+      timezone: current.type === 'transport' ? currentDayTimezone : current.timezone,
+      departure_timezone: current.type === 'transport' ? '' : current.departure_timezone,
+      arrival_timezone: current.type === 'transport' ? '' : current.arrival_timezone,
       status: current.type === 'transport' ? 'unscheduled' : current.status,
       arrival_date: '',
       arrival_time: '',
@@ -1246,23 +1400,32 @@ export default function AdminView() {
           <div className="mb-3 flex shrink-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <h3 className="text-sm font-black text-slate-900">按天时间表</h3>
-              <p className="mt-0.5 text-[10px] font-semibold text-slate-400">D{currentDay} · {formatShortDate(currentDate)} · {currentDayNodes.length} 个项目 · 全天 · 半小时拖动 · 靠近接续</p>
+              <p className="mt-0.5 text-[10px] font-semibold text-slate-400">D{currentDay} · {formatShortDate(currentDate)} · {currentDayNodes.length} 个项目 · 旅程当地时间 · {currentDayTimeZoneText}</p>
             </div>
-            <div className="flex max-w-full gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-100/80 p-1">
-              {dayNumbers.map((day) => {
-                const selected = day === currentDay;
-                return (
-                  <button
-                    key={day}
-                    type="button"
-                    onClick={() => setActiveDay(day)}
-                    className={`min-w-16 rounded-lg px-2.5 py-1.5 text-left transition ${selected ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60 hover:text-slate-800'}`}
-                  >
-                    <span className="block text-xs font-black">D{day}</span>
-                    <span className="block text-[9px] font-bold">{formatShortDate(dateByDay.get(day))}</span>
-                  </button>
-                );
-              })}
+            <div className="flex min-w-0 flex-col gap-2">
+              <div className="flex max-w-full gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-100/80 p-1">
+                {dayNumbers.map((day) => {
+                  const selected = day === currentDay;
+                  return (
+                    <button
+                      key={day}
+                      type="button"
+                      onClick={() => setActiveDay(day)}
+                      className={`min-w-16 rounded-lg px-2.5 py-1.5 text-left transition ${selected ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60 hover:text-slate-800'}`}
+                    >
+                      <span className="block text-xs font-black">D{day}</span>
+                      <span className="block text-[9px] font-bold">{formatShortDate(dateByDay.get(day))}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBeijingTime((value) => !value)}
+                className={`self-end rounded-full border px-3 py-1 text-[10px] font-black transition ${showBeijingTime ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white/70 text-slate-500 hover:text-slate-800'}`}
+              >
+                北京时间参考 {showBeijingTime ? '开' : '关'}
+              </button>
             </div>
           </div>
 
@@ -1317,7 +1480,17 @@ export default function AdminView() {
                     const titlePlaces = event.node.title.split(/\s*→\s*|\s*飞往\s*/);
                     const departure = event.node.departure_place || titlePlaces[0] || '出发地';
                     const arrival = event.node.arrival_place || titlePlaces[1] || '到达地';
-                    const timeRange = `${event.displayStart} - ${event.displayEnd}`;
+                    const departureTimezone = nodeDepartureTimeZone(event.node, currentDayTimezone);
+                    const arrivalTimezone = nodeArrivalTimeZone(event.node, departureTimezone);
+                    const departureOffset = localOffsetText(event.node.date, event.node.time, departureTimezone);
+                    const arrivalDate = event.node.end_date || event.node.arrival_date || event.node.date;
+                    const arrivalTime = event.node.end_time || event.node.arrival_time || event.displayEnd;
+                    const arrivalOffset = localOffsetText(arrivalDate, arrivalTime, arrivalTimezone);
+                    const timeRange = `${event.displayStart} ${departureOffset} - ${event.displayEnd} ${arrivalOffset}`;
+                    const actualDuration = transportDurationText(event.node);
+                    const zoneChangeText = departureTimezone === arrivalTimezone
+                      ? `${timeZoneOptionLabel(departureTimezone)}`
+                      : `${timeZoneOptionLabel(departureTimezone)} → ${timeZoneOptionLabel(arrivalTimezone)}`;
                     const segmentText = event.segmentKind === 'start'
                       ? `跨至 D${event.arrivalDay}`
                       : event.segmentKind === 'end'
@@ -1353,7 +1526,7 @@ export default function AdminView() {
                             </span>
                             <div className="min-w-0 flex-1">
                               <div className="truncate text-[10px] font-black tabular-nums text-slate-900">{timeRange} · {event.node.service_number || transportMode?.label || '交通'}</div>
-                              <div className="truncate text-[8px] font-bold text-slate-500">{departure} → {arrival}</div>
+                              <div className="truncate text-[8px] font-bold text-slate-500">{departure} → {arrival} · 实际 {actualDuration}</div>
                             </div>
                             <LockKeyhole className="h-3.5 w-3.5 shrink-0 text-sky-500" />
                           </div>
@@ -1374,7 +1547,8 @@ export default function AdminView() {
                             <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
                               <div className="min-w-0">
                                 <div className="text-sm font-black tabular-nums text-slate-950">{event.displayStart}</div>
-                                <div className="mt-0.5 truncate text-[9px] font-bold text-slate-500">{departure}</div>
+                                <div className="mt-0.5 text-[8px] font-black text-sky-600">{departureOffset}</div>
+                                <div className="truncate text-[9px] font-bold text-slate-500">{departure}</div>
                               </div>
                               <div className="flex min-w-12 items-center gap-1 text-sky-500">
                                 <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400" />
@@ -1383,14 +1557,17 @@ export default function AdminView() {
                               </div>
                               <div className="min-w-0 text-right">
                                 <div className="text-sm font-black tabular-nums text-slate-950">{event.displayEnd}</div>
-                                <div className="mt-0.5 truncate text-[9px] font-bold text-slate-500">{arrival}</div>
+                                <div className="mt-0.5 text-[8px] font-black text-sky-600">{arrivalOffset}</div>
+                                <div className="truncate text-[9px] font-bold text-slate-500">{arrival}</div>
                               </div>
                             </div>
 
                             {roomyTransport && (
                               <div className="flex items-center justify-between gap-2 border-t border-sky-100/80 pt-1 text-[8px] font-bold text-slate-500">
-                                <span className="truncate">{event.node.title}</span>
-                                <span className="shrink-0">{segmentText || event.node.duration || '时长待补充'}</span>
+                                <span className="truncate">{zoneChangeText}</span>
+                                <span className="shrink-0">
+                                  实际 {actualDuration}{showBeijingTime ? ` · 北京 ${beijingRangeText(event.node)}` : segmentText ? ` · ${segmentText}` : ''}
+                                </span>
                               </div>
                             )}
                           </div>
@@ -1401,6 +1578,7 @@ export default function AdminView() {
                   const pointTimeText = event.segmentKind === 'single'
                     ? nodeTimingText(event.node)
                     : `${event.displayStart} - ${event.displayEnd} · ${event.segmentKind === 'start' ? `跨至 D${event.arrivalDay}` : event.segmentKind === 'end' ? `D${event.departureDay} 延续` : '跨天途中'}`;
+                  const pointBeijingTime = showBeijingTime ? beijingPointTimeText(event.node, currentDayTimezone) : '';
                   return (
                     <button
                       key={`${event.node.id}-${currentDay}-${event.segmentKind}`}
@@ -1463,6 +1641,11 @@ export default function AdminView() {
                               {nodeScheduleDetailText(event.node)}
                             </div>
                           )}
+                          {pointBeijingTime && (
+                            <div className="mt-0.5 truncate text-[8px] font-black text-white/70">
+                              北京时间 {pointBeijingTime}
+                            </div>
+                          )}
                           {showScheduleThumb && event.node.description && (
                             <div className="mt-0.5 line-clamp-1 text-[8px] font-medium leading-tight text-white/68">
                               {event.node.description}
@@ -1482,6 +1665,19 @@ export default function AdminView() {
                   );
                 })}
               </div>
+
+              {currentDayTimeZoneTransitions.map((transition) => (
+                <div
+                  key={transition.id}
+                  className="pointer-events-none absolute left-[64px] right-3 z-40"
+                  style={{ top: (transition.minutes / SLOT_MINUTES) * SLOT_HEIGHT }}
+                >
+                  <div className="absolute inset-x-0 top-0 border-t border-dashed border-sky-300" />
+                  <div className="absolute right-2 top-0 -translate-y-1/2 rounded-full border border-sky-100 bg-white/95 px-2 py-1 text-[8px] font-black text-sky-700 shadow-sm">
+                    切换为 {timeZoneOptionLabel(transition.arrivalTimezone)} · {formatTimeZoneOffset(transition.arrivalTimezone, zonedTimeToUtcMs(currentDate, formatTime(transition.minutes), transition.arrivalTimezone))}
+                  </div>
+                </div>
+              ))}
 
               {dragPreview && (
                 <div
@@ -1598,6 +1794,48 @@ export default function AdminView() {
               </div>
 
               <div className="grid grid-cols-2 gap-2">
+                <label className="text-xs font-semibold text-slate-700">
+                  出发时区
+                  <select
+                    value={form.departure_timezone || currentDayTimezone}
+                    onChange={(event) => setForm({ ...form, departure_timezone: event.target.value })}
+                    className={inputClass}
+                  >
+                    {TIMEZONE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label} · {option.hint}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  到达时区
+                  <select
+                    value={form.arrival_timezone || form.departure_timezone || currentDayTimezone}
+                    onChange={(event) => setForm({ ...form, arrival_timezone: event.target.value, timezone: event.target.value })}
+                    className={inputClass}
+                  >
+                    {TIMEZONE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label} · {option.hint}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="rounded-xl border border-sky-100 bg-white/65 px-3 py-2 text-[10px] font-bold text-slate-500">
+                票面时间按机场当地时间录入 · {localOffsetText(form.date || currentDate, form.time || '12:00', form.departure_timezone || currentDayTimezone)}
+                {' '}→ {localOffsetText(form.arrival_date || form.date || currentDate, form.arrival_time || '14:00', form.arrival_timezone || form.departure_timezone || currentDayTimezone)}
+                {form.departure_timezone && form.arrival_timezone && form.departure_timezone !== form.arrival_timezone && (
+                  <span className="ml-1 text-sky-700">· 实际 {transportDurationText({
+                    date: form.date || currentDate,
+                    time: form.time || '12:00',
+                    end_date: form.arrival_date || form.date || currentDate,
+                    end_time: form.arrival_time || '14:00',
+                    departure_timezone: form.departure_timezone,
+                    arrival_timezone: form.arrival_timezone,
+                  })}</span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
                 {transportModeOptions.map(({ value, label, icon: Icon }) => (
                   <button
                     key={value}
@@ -1657,7 +1895,20 @@ export default function AdminView() {
                     出发地
                     <input required value={form.departure_place} onChange={(event) => setForm({ ...form, departure_place: event.target.value })} className={inputClass} />
                   </label>
-                  <LocationPicker compact value={{ lat: form.departure_lat ?? form.lat, lng: form.departure_lng ?? form.lng, title: form.departure_place }} onChange={(location) => setForm((current) => ({ ...current, departure_place: location.title || current.departure_place, departure_lat: location.lat, departure_lng: location.lng }))} />
+                  <LocationPicker compact value={{ lat: form.departure_lat ?? form.lat, lng: form.departure_lng ?? form.lng, title: form.departure_place }} onChange={(location) => setForm((current) => ({
+                    ...current,
+                    departure_place: location.title || current.departure_place,
+                    departure_lat: location.lat,
+                    departure_lng: location.lng,
+                    departure_timezone: inferTimeZoneFromLocation({
+                      place: location.title || current.departure_place,
+                      city: location.city,
+                      address: location.address,
+                      lat: location.lat,
+                      lng: location.lng,
+                      fallback: current.departure_timezone || currentDayTimezone,
+                    }),
+                  }))} />
                 </div>
 
                 <div className="rounded-2xl border border-white/70 bg-white/55 p-2.5">
@@ -1665,7 +1916,26 @@ export default function AdminView() {
                     到达地
                     <input required value={form.arrival_place} onChange={(event) => setForm({ ...form, arrival_place: event.target.value })} className={inputClass} />
                   </label>
-                  <LocationPicker compact value={{ lat: form.arrival_lat ?? form.lat, lng: form.arrival_lng ?? form.lng, title: form.arrival_place }} onChange={(location) => setForm((current) => ({ ...current, arrival_place: location.title || current.arrival_place, arrival_lat: location.lat, arrival_lng: location.lng, lat: location.lat, lng: location.lng }))} />
+                  <LocationPicker compact value={{ lat: form.arrival_lat ?? form.lat, lng: form.arrival_lng ?? form.lng, title: form.arrival_place }} onChange={(location) => setForm((current) => {
+                    const arrivalTimezone = inferTimeZoneFromLocation({
+                      place: location.title || current.arrival_place,
+                      city: location.city,
+                      address: location.address,
+                      lat: location.lat,
+                      lng: location.lng,
+                      fallback: current.arrival_timezone || current.departure_timezone || currentDayTimezone,
+                    });
+                    return {
+                      ...current,
+                      arrival_place: location.title || current.arrival_place,
+                      arrival_lat: location.lat,
+                      arrival_lng: location.lng,
+                      lat: location.lat,
+                      lng: location.lng,
+                      timezone: arrivalTimezone,
+                      arrival_timezone: arrivalTimezone,
+                    };
+                  })} />
                 </div>
               </div>
               </div>
@@ -1714,7 +1984,20 @@ export default function AdminView() {
                 <input value={form.duration} onChange={(event) => setForm({ ...form, duration: event.target.value })} placeholder="例如：1小时30分" className={inputClass} />
               </label>
 
-              <LocationPicker value={{ lat: form.lat, lng: form.lng, city: form.city, address: form.address, title: form.title }} onChange={(location) => setForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, title: current.title || location.title || '' }))} />
+              <label className="block text-xs font-semibold text-slate-700">
+                当地时区
+                <select
+                  value={form.timezone || currentDayTimezone}
+                  onChange={(event) => setForm({ ...form, timezone: event.target.value })}
+                  className={inputClass}
+                >
+                  {TIMEZONE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label} · {option.hint}</option>
+                  ))}
+                </select>
+              </label>
+
+              <LocationPicker value={{ lat: form.lat, lng: form.lng, city: form.city, address: form.address, title: form.title }} onChange={(location) => setForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, title: current.title || location.title || '', timezone: inferTimeZoneFromLocation({ place: location.title || current.title, city: location.city, address: location.address, lat: location.lat, lng: location.lng, fallback: current.timezone || currentDayTimezone }) }))} />
 
               <div tabIndex={0} onPaste={pasteImage} className="rounded-2xl border border-dashed border-indigo-200 bg-indigo-50/40 p-3 outline-none focus:border-indigo-400">
                 <div className="grid grid-cols-3 gap-2">

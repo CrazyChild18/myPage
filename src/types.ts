@@ -17,6 +17,7 @@ export interface ItineraryNode {
   end_time?: string;
   end_day?: number;
   end_date?: string;
+  timezone?: string;
   city?: string;
   address?: string;
   image_url?: string;
@@ -24,6 +25,8 @@ export interface ItineraryNode {
   transport_mode?: TransportMode;
   departure_place?: string;
   arrival_place?: string;
+  departure_timezone?: string;
+  arrival_timezone?: string;
   departure_lat?: number | null;
   departure_lng?: number | null;
   arrival_lat?: number | null;
