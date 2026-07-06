@@ -29,6 +29,18 @@ npm run dev
 
 前端开发地址为 `http://localhost:3000`，Vite 会把 `/api` 代理到 `http://127.0.0.1:8080`。
 
+## 数据库同步
+
+线上 Docker volume 中的 SQLite 数据库是准源，仓库不提交 `backend/voyageplanner.db`，本地旧库也不应覆盖服务器。
+
+如需把服务器当前数据拉到本地调试，运行：
+
+```bash
+bash scripts/pull-server-db.sh
+```
+
+脚本只从服务器容器拉取 `/data/voyageplanner.db` 到本地 `backend/voyageplanner.db`，并会先把已有本地库备份到 `.runtime/db-backups/`。SSH 密码不写入仓库，按提示输入即可。
+
 ## Docker 部署
 
 ```bash
