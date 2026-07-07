@@ -5,6 +5,10 @@
 
 export type ItineraryType = 'transport' | 'transfer' | 'hotel' | 'restaurant' | 'sightseeing' | 'leisure' | 'shopping';
 export type TransportMode = 'flight' | 'high_speed_rail' | 'train' | 'car' | 'bus' | 'subway' | 'ferry' | 'other';
+export type TripRegion = 'domestic' | 'overseas';
+export type MapProvider = 'amap' | 'google';
+export type CoordinateSystem = 'gcj02' | 'wgs84';
+export type PlaceProvider = MapProvider | 'manual';
 
 export interface ItineraryNode {
   id: string;
@@ -31,6 +35,13 @@ export interface ItineraryNode {
   departure_lng?: number | null;
   arrival_lat?: number | null;
   arrival_lng?: number | null;
+  place_provider?: PlaceProvider;
+  provider_place_id?: string;
+  coord_system?: CoordinateSystem;
+  departure_place_provider?: PlaceProvider;
+  departure_provider_place_id?: string;
+  arrival_place_provider?: PlaceProvider;
+  arrival_provider_place_id?: string;
   arrival_time?: string;
   arrival_date?: string;
   service_number?: string;
@@ -69,6 +80,9 @@ export interface Trip {
   car: string;
   car_image_url?: string;
   accommodations: Accommodation[];
+  trip_region: TripRegion;
+  map_provider: MapProvider;
+  coord_system: CoordinateSystem;
 }
 
 export interface TripSummary extends Trip {

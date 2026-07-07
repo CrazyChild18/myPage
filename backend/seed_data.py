@@ -7,7 +7,7 @@ TRIP = {
     "travelers": 4,
     "origin": "北京",
     "summary": "以 Borg、教堂城和凯夫拉维克为住宿据点，覆盖黄金圈、雷克雅内斯半岛、南岸、冰河湖、F225 与蓝湖。",
-    "car": "Land Rover Defender 4x4；9月26日至10月5日；Platinum Insurance、道路救援、额外驾驶员、4G WiFi、不限里程。",
+    "car": "租车公司：Lotus Car Rental；预订号：MWB93A；车型：Land Rover Defender 4x4；租车时间：2026-09-27 10:30 至 2026-10-04 22:30；价格：ISK 355,919.00；购买保险：Silver Insurance Plan、Platinum Insurance Plan (L)；驾驶员人数/说明：主驾驶 + 1 名额外驾驶员；其他服务：Road Tax、Roadside Assistance Protection、Pick-up / Drop-off；订单号：128227；支付状态：已支付 ISK 355,919.00，待付 ISK 0.00。",
     "car_image_url": "https://volcanotrails.overcastcdn.com/images/536_04.2e16d0ba.fill-1200x630.jpg",
     "accommodations": [
         {

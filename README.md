@@ -29,6 +29,23 @@ npm run dev
 
 前端开发地址为 `http://localhost:3000`，Vite 会把 `/api` 代理到 `http://127.0.0.1:8080`。
 
+## 地图供应商
+
+行程按区域选择地图供应商：国内行程使用高德，境外行程使用 Google。地点数据在应用层保存为统一结构，坐标默认以 WGS84 存储；高德地图渲染时再转换为 GCJ-02。
+
+`.env` 中可配置：
+
+```bash
+AMAP_WEB_SERVICE_KEY=              # 后端高德 POI / 逆地址解析
+VITE_AMAP_JS_API_KEY=              # 前端高德地图 JS
+VITE_AMAP_SECURITY_CODE=           # 高德安全密钥，如控制台要求
+GOOGLE_MAPS_API_KEY=               # 后端 Google Places / Geocoding
+VITE_GOOGLE_MAPS_BROWSER_KEY=      # 前端 Google Maps JS
+APP_PORT=25565                     # Docker 对外端口，服务器可设为 2002
+```
+
+地点检索只在用户点击“搜索”时调用接口，并使用本地缓存，避免个人项目里因输入联想产生额外调用。
+
 ## 数据库同步
 
 `backend/voyageplanner.db` 和 `backend/uploads/` 会提交到 GitHub，用来让本地、GitHub 和服务器保留同一份行程数据与图片快照。线上 Docker volume 中的 SQLite 数据库和上传图片是日常准源；同步时先从服务器拉取当前 `/data/voyageplanner.db` 与 `/data/uploads/`，再提交到 GitHub，避免本地旧数据覆盖服务器数据。
@@ -49,7 +66,7 @@ bash scripts/pull-server-db.sh
 docker compose up -d --build
 ```
 
-访问 `http://服务器地址:25565`。服务显式绑定到 `0.0.0.0:25565`，SQLite 数据保存在 Docker volume `voyageplanner-data` 中，重新构建镜像不会丢失修改。
+访问 `http://服务器地址:25565`，或使用 `.env` 中的 `APP_PORT` 指定对外端口。服务显式绑定到 `0.0.0.0:${APP_PORT:-25565}`，SQLite 数据保存在 Docker volume `voyageplanner-data` 中，重新构建镜像不会丢失修改。
 
 Docker 是推荐的服务器部署方式，服务器无需安装 Conda；`environment.yml` 主要用于本地开发或不使用 Docker 的环境。
 

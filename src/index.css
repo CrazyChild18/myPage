@@ -94,7 +94,7 @@
 
 @page {
   size: A4 portrait;
-  margin: 10mm 9mm 10mm;
+  margin: 0;
 }
 
 @media print {
@@ -110,19 +110,38 @@
     font-size: 9px;
   }
 
-  .visa-cover {
-    break-after: avoid;
+  .visa-document {
+    color: #0f172a !important;
+    padding: 10mm 9mm !important;
   }
 
-  .day-sheet {
+  .visa-document section {
+    break-inside: avoid;
+  }
+
+  .visa-table {
+    page-break-inside: auto;
+  }
+
+  .visa-table tr {
     page-break-inside: avoid;
+    page-break-after: auto;
   }
 
-  .itinerary-row {
-    page-break-inside: avoid;
+  .visa-table th,
+  .visa-table td {
+    border: 1px solid #cbd5e1;
+    padding: 4px 5px;
+    vertical-align: top;
+    line-height: 1.35;
   }
 
-  .image-strip .image-thumb:not(:first-child) {
-    display: none;
+  .visa-table th {
+    background: #f1f5f9 !important;
+    font-weight: 800;
+  }
+
+  .visa-table td {
+    font-weight: 600;
   }
 }

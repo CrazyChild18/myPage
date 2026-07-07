@@ -11,9 +11,38 @@ import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryNode, ItineraryEdge, TripSummary } from '../../types';
 import { isScheduledNode } from '../../utils/itinerary';
 import { Plane, Car, Train, Navigation, Compass } from 'lucide-react';
+import { toProviderPoint } from '../../map/coordinates';
+import { amapBrowserKey, amapSecurityCode, googleMapsBrowserKey, mapProviderForTrip, mapProviderLabel } from '../../map/provider';
+import { loadAmap, loadGoogleMaps } from '../../map/scriptLoaders';
 
 type PreviewState = { node: ItineraryNode; index: number } | null;
 const imagesOf = (node: ItineraryNode) => node.image_urls?.length ? node.image_urls : node.image_url ? [node.image_url] : [];
+
+const nodeColor = (node: Pick<ItineraryNode, 'type'>) => {
+  switch (node.type) {
+    case 'hotel': return '#10b981';
+    case 'restaurant': return '#f43f5e';
+    case 'sightseeing': return '#8b5cf6';
+    case 'transfer': return '#0ea5e9';
+    case 'leisure': return '#f59e0b';
+    case 'shopping': return '#ec4899';
+    case 'transport':
+    default: return '#06b6d4';
+  }
+};
+
+const nodeTypeLabel = (node: Pick<ItineraryNode, 'type'>) => {
+  switch (node.type) {
+    case 'hotel': return '酒店';
+    case 'restaurant': return '餐厅';
+    case 'sightseeing': return '景点';
+    case 'transfer': return '转机';
+    case 'leisure': return '休闲';
+    case 'shopping': return '购物';
+    case 'transport':
+    default: return '交通';
+  }
+};
 
 // Custom icons setup using dynamic SVG inside DivIcon
 const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
@@ -22,7 +51,7 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
 
   switch (node.type) {
     case 'hotel':
-      color = '#10b981'; // emerald green
+      color = nodeColor(node);
       iconSvg = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-white">
           <path d="M3 10V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5" />
@@ -34,7 +63,7 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
       `;
       break;
     case 'restaurant':
-      color = '#f43f5e'; // rose pink
+      color = nodeColor(node);
       iconSvg = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-white">
           <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2" />
@@ -44,7 +73,7 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
       `;
       break;
     case 'sightseeing':
-      color = '#8b5cf6'; // violet royal
+      color = nodeColor(node);
       iconSvg = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-white">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
@@ -53,7 +82,7 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
       `;
       break;
     case 'leisure':
-      color = '#f59e0b'; // amber gold
+      color = nodeColor(node);
       iconSvg = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-white">
           <circle cx="12" cy="12" r="10" />
@@ -64,7 +93,7 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
       `;
       break;
     case 'transfer':
-      color = '#0ea5e9';
+      color = nodeColor(node);
       iconSvg = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-white">
           <path d="M22 2 9 15" /><path d="m22 2-7 20-4-9-9-4Z" />
@@ -72,7 +101,7 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
       `;
       break;
     case 'shopping':
-      color = '#ec4899'; // bubblegum pink
+      color = nodeColor(node);
       iconSvg = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-white">
           <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" />
@@ -83,7 +112,7 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
       break;
     case 'transport':
     default:
-      color = '#06b6d4'; // teal cyan
+      color = nodeColor(node);
       iconSvg = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-white">
           <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
@@ -132,20 +161,95 @@ const tripPinIcon = (trip: TripSummary, selected: boolean) => L.divIcon({
   iconAnchor: [18, 36],
 });
 
+const toRadians = (value: number) => (value * Math.PI) / 180;
+const toDegrees = (value: number) => (value * 180) / Math.PI;
+
+const normalizedEndLng = (startLng: number, endLng: number) => {
+  if (endLng - startLng > 180) return endLng - 360;
+  if (endLng - startLng < -180) return endLng + 360;
+  return endLng;
+};
+
+const routeDistanceKm = (startLat: number, startLng: number, endLat: number, endLng: number) => {
+  const radiusKm = 6371;
+  const lat1 = toRadians(startLat);
+  const lat2 = toRadians(endLat);
+  const deltaLat = toRadians(endLat - startLat);
+  const deltaLng = toRadians(endLng - startLng);
+  const a = Math.sin(deltaLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
+  return 2 * radiusKm * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const greatCirclePath = (startLat: number, startLng: number, endLat: number, endLng: number): [number, number][] => {
+  const startPhi = toRadians(startLat);
+  const startLambda = toRadians(startLng);
+  const endPhi = toRadians(endLat);
+  const endLambda = toRadians(endLng);
+  const start = [
+    Math.cos(startPhi) * Math.cos(startLambda),
+    Math.cos(startPhi) * Math.sin(startLambda),
+    Math.sin(startPhi),
+  ];
+  const end = [
+    Math.cos(endPhi) * Math.cos(endLambda),
+    Math.cos(endPhi) * Math.sin(endLambda),
+    Math.sin(endPhi),
+  ];
+  const omega = Math.acos(Math.max(-1, Math.min(1, start[0] * end[0] + start[1] * end[1] + start[2] * end[2])));
+  if (!Number.isFinite(omega) || omega < 1e-6) return [[startLat, startLng], [endLat, endLng]];
+
+  let previousLng = startLng;
+  return Array.from({ length: 33 }, (_, index) => {
+    const t = index / 32;
+    const a = Math.sin((1 - t) * omega) / Math.sin(omega);
+    const b = Math.sin(t * omega) / Math.sin(omega);
+    const x = a * start[0] + b * end[0];
+    const y = a * start[1] + b * end[1];
+    const z = a * start[2] + b * end[2];
+    const lat = toDegrees(Math.atan2(z, Math.sqrt(x * x + y * y)));
+    let lng = toDegrees(Math.atan2(y, x));
+    while (lng - previousLng > 180) lng -= 360;
+    while (lng - previousLng < -180) lng += 360;
+    previousLng = lng;
+    return [lat, lng] as [number, number];
+  });
+};
+
+const isAirTransport = (node: ItineraryNode) => node.transport_mode === 'flight';
+
 const transportPath = (node: ItineraryNode): [number, number][] => {
   if (node.departure_lat == null || node.departure_lng == null || node.arrival_lat == null || node.arrival_lng == null) return [];
-  let endLng = node.arrival_lng;
-  const startLng = node.departure_lng;
-  if (endLng - startLng > 180) endLng -= 360;
-  if (endLng - startLng < -180) endLng += 360;
-  const distance = Math.hypot(node.arrival_lat - node.departure_lat, endLng - startLng);
-  const lift = Math.min(24, Math.max(4, distance * 0.16));
-  return Array.from({ length: 25 }, (_, index) => {
-    const t = index / 24;
-    const lat = node.departure_lat! + (node.arrival_lat! - node.departure_lat!) * t + Math.sin(Math.PI * t) * lift;
-    const lng = startLng + (endLng - startLng) * t;
-    return [lat, lng];
-  });
+  const endLng = normalizedEndLng(node.departure_lng, node.arrival_lng);
+  const distanceKm = routeDistanceKm(node.departure_lat, node.departure_lng, node.arrival_lat, endLng);
+  if (!isAirTransport(node) || distanceKm < 280) {
+    return [
+      [node.departure_lat, node.departure_lng],
+      [node.arrival_lat, endLng],
+    ];
+  }
+  return greatCirclePath(node.departure_lat, node.departure_lng, node.arrival_lat, endLng);
+};
+
+const transportLineStyle = (node: ItineraryNode, selected: boolean): L.PolylineOptions => {
+  const air = isAirTransport(node);
+  const railway = node.transport_mode === 'train' || node.transport_mode === 'high_speed_rail' || node.transport_mode === 'subway';
+  const ground = node.transport_mode === 'car' || node.transport_mode === 'bus';
+  const color = air ? '#2563eb' : railway ? '#10b981' : ground ? '#0284c7' : '#0ea5e9';
+  return {
+    color,
+    weight: selected ? 4.2 : air ? 2.8 : 3,
+    opacity: selected ? 1 : air ? 0.82 : 0.72,
+    dashArray: selected ? undefined : air ? '10, 10' : '6, 8',
+    lineCap: 'round',
+    lineJoin: 'round',
+  };
+};
+
+const transportIconType = (route: ItineraryNode) => {
+  if (route.transport_mode === 'flight') return 'flight';
+  if (route.transport_mode === 'train' || route.transport_mode === 'high_speed_rail' || route.transport_mode === 'subway') return 'train';
+  if (route.transport_mode === 'car' || route.transport_mode === 'bus') return 'car';
+  return 'other';
 };
 
 // Fit-Bounds helper to encompass active items automatically
@@ -196,22 +300,25 @@ const TransportRouteLayer: React.FC<TransportRouteLayerProps> = ({
   const lineRef = useRef<L.Polyline>(null);
   const path = transportPath(route);
   const midpoint = path[Math.floor(path.length / 2)];
+  const lineStyle = transportLineStyle(route, selected);
 
   useEffect(() => {
     if (selected) lineRef.current?.openPopup();
   }, [selected]);
+
+  if (path.length < 2 || !midpoint) return null;
 
   return (
     <React.Fragment>
       <Polyline
         ref={lineRef}
         positions={path}
-        pathOptions={{ color: selected ? '#2563eb' : '#38bdf8', weight: selected ? 4 : 2.5, opacity: selected ? 1 : 0.78, dashArray: selected ? undefined : '9, 9' }}
+        pathOptions={lineStyle}
         eventHandlers={{ click: onSelect }}
       >
         <Popup position={midpoint} autoPan={false} closeButton={false} closeOnClick={false}>
           <div className="min-w-48 font-sans">
-            <div className="flex items-center gap-1.5 text-xs font-black text-sky-700">{renderTransportIcon(route.transport_mode === 'flight' ? 'flight' : route.transport_mode === 'train' || route.transport_mode === 'high_speed_rail' ? 'train' : 'other')}{route.service_number || '区间交通'}</div>
+            <div className="flex items-center gap-1.5 text-xs font-black text-sky-700">{renderTransportIcon(transportIconType(route))}{route.service_number || '区间交通'}</div>
             <div className="mt-2 text-[11px] font-bold text-slate-800">{route.departure_place} → {route.arrival_place}</div>
             <div className="mt-1 text-[9px] text-slate-500">D{route.day} · {route.time} - {route.arrival_time || '--:--'} · {route.duration || '时长待补充'}</div>
           </div>
@@ -290,8 +397,344 @@ const ItineraryNodeMarker: React.FC<ItineraryNodeMarkerProps> = ({
   );
 };
 
+type ProviderMapCanvasProps = {
+  provider: 'google' | 'amap';
+  mode: 'home' | 'trip';
+  trips: TripSummary[];
+  selectedHomeTrip: TripSummary | null;
+  selectedHomeSlug: string | null;
+  visibleNodes: ItineraryNode[];
+  visibleTransportRoutes: ItineraryNode[];
+  visibleEdges: ItineraryEdge[];
+  nodes: ItineraryNode[];
+  activeNodeId: string | null;
+  setActiveNodeId: (id: string | null) => void;
+  onSelectHomeTrip?: (slug: string) => void;
+  onOpenHomeTrip?: (slug: string) => void;
+};
+
+const ProviderMissingFallback = ({
+  provider,
+  children,
+}: {
+  provider: 'google' | 'amap';
+  children: React.ReactNode;
+}) => (
+  <div className="relative h-full w-full">
+    {children}
+    <div className="absolute left-1/2 top-5 z-[10000] -translate-x-1/2 rounded-2xl border border-white/70 bg-white/90 px-4 py-3 text-center text-[11px] font-bold text-slate-700 shadow-xl backdrop-blur-xl">
+      <div className="text-slate-950">{mapProviderLabel[provider]} 浏览器 Key 未配置</div>
+      <div className="mt-1 text-[10px] font-semibold text-slate-500">当前仅使用开发预览底图；配置 Key 后自动切换正式地图。</div>
+    </div>
+  </div>
+);
+
+const googleLatLng = (point: [number, number]) => ({ lat: point[0], lng: point[1] });
+
+const nodeInfoHtml = (node: ItineraryNode) => {
+  const image = imagesOf(node)[0];
+  return `
+    <div style="max-width:230px;font-family:Inter,system-ui,sans-serif">
+      ${image ? `<img src="${image}" alt="" style="width:100%;height:92px;object-fit:cover;border-radius:12px;margin-bottom:8px" />` : ''}
+      <div style="font-weight:900;color:#0f172a;font-size:13px;line-height:1.25">${node.title}</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+        <span style="border-radius:999px;background:${nodeColor(node)};color:white;padding:2px 8px;font-size:10px;font-weight:800">${nodeTypeLabel(node)}</span>
+        <span style="font-size:10px;color:#64748b;font-weight:700">D${node.day} · ${node.time}</span>
+      </div>
+      ${node.description ? `<div style="margin-top:6px;color:#475569;font-size:11px;line-height:1.45">${node.description}</div>` : ''}
+    </div>
+  `;
+};
+
+const transportInfoHtml = (route: ItineraryNode) => `
+  <div style="min-width:190px;font-family:Inter,system-ui,sans-serif">
+    <div style="font-size:12px;font-weight:900;color:#0369a1">${route.service_number || '区间交通'}</div>
+    <div style="margin-top:8px;font-size:12px;font-weight:800;color:#0f172a">${route.departure_place || '出发地'} → ${route.arrival_place || '到达地'}</div>
+    <div style="margin-top:4px;font-size:10px;color:#64748b;font-weight:700">D${route.day} · ${route.time} - ${route.arrival_time || '--:--'} · ${route.duration || '时长待补充'}</div>
+  </div>
+`;
+
+const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
+  mode,
+  trips,
+  selectedHomeTrip,
+  selectedHomeSlug,
+  visibleNodes,
+  visibleTransportRoutes,
+  visibleEdges,
+  nodes,
+  activeNodeId,
+  setActiveNodeId,
+  onSelectHomeTrip,
+  onOpenHomeTrip,
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<any>(null);
+  const overlaysRef = useRef<any[]>([]);
+  const infoRef = useRef<any>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadGoogleMaps(googleMapsBrowserKey())
+      .then((maps) => {
+        if (cancelled || !containerRef.current) return;
+        setError(null);
+        if (!mapRef.current) {
+          mapRef.current = new maps.Map(containerRef.current, {
+            center: selectedHomeTrip ? { lat: selectedHomeTrip.center_lat, lng: selectedHomeTrip.center_lng } : { lat: 32, lng: 12 },
+            zoom: selectedHomeTrip ? 5 : 2,
+            mapTypeControl: false,
+            streetViewControl: false,
+            fullscreenControl: false,
+            gestureHandling: 'greedy',
+          });
+          infoRef.current = new maps.InfoWindow();
+        }
+
+        overlaysRef.current.forEach((overlay) => overlay.setMap?.(null));
+        overlaysRef.current = [];
+        const bounds = new maps.LatLngBounds();
+        let hasBounds = false;
+        const remember = (lat: number, lng: number) => {
+          bounds.extend({ lat, lng });
+          hasBounds = true;
+        };
+
+        if (mode === 'home') {
+          trips.forEach((trip) => {
+            remember(trip.center_lat, trip.center_lng);
+            const marker = new maps.Marker({
+              map: mapRef.current,
+              position: { lat: trip.center_lat, lng: trip.center_lng },
+              title: trip.title,
+              label: { text: trip.title.slice(0, 8), color: '#111827', fontWeight: '800', fontSize: '11px' },
+            });
+            marker.addListener('click', () => {
+              onSelectHomeTrip?.(trip.slug);
+              window.setTimeout(() => onOpenHomeTrip?.(trip.slug), 650);
+            });
+            overlaysRef.current.push(marker);
+          });
+          if (selectedHomeTrip) mapRef.current.panTo({ lat: selectedHomeTrip.center_lat, lng: selectedHomeTrip.center_lng });
+        } else {
+          visibleTransportRoutes.forEach((route) => {
+            const path = transportPath(route).map(googleLatLng);
+            if (path.length < 2) return;
+            path.forEach((point) => remember(point.lat, point.lng));
+            const selected = activeNodeId === route.id;
+            const style = transportLineStyle(route, selected);
+            const line = new maps.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: String(style.color || '#0ea5e9'),
+              strokeOpacity: Number(style.opacity || 0.8),
+              strokeWeight: Number(style.weight || 3),
+            });
+            line.addListener('click', () => {
+              setActiveNodeId(route.id);
+              infoRef.current.setContent(transportInfoHtml(route));
+              infoRef.current.setPosition(path[Math.floor(path.length / 2)]);
+              infoRef.current.open(mapRef.current);
+            });
+            overlaysRef.current.push(line);
+          });
+
+          visibleEdges.forEach((edge) => {
+            const src = nodes.find((node) => node.id === edge.source);
+            const target = nodes.find((node) => node.id === edge.target);
+            if (!src || !target) return;
+            const path = [{ lat: src.lat, lng: src.lng }, { lat: target.lat, lng: target.lng }];
+            const line = new maps.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: '#94a3b8',
+              strokeOpacity: 0.6,
+              strokeWeight: 2,
+            });
+            overlaysRef.current.push(line);
+          });
+
+          visibleNodes.forEach((node) => {
+            remember(node.lat, node.lng);
+            const marker = new maps.Marker({
+              map: mapRef.current,
+              position: { lat: node.lat, lng: node.lng },
+              title: node.title,
+              icon: {
+                path: maps.SymbolPath.CIRCLE,
+                fillColor: nodeColor(node),
+                fillOpacity: 1,
+                strokeColor: '#ffffff',
+                strokeWeight: activeNodeId === node.id ? 4 : 2,
+                scale: activeNodeId === node.id ? 12 : 10,
+              },
+            });
+            marker.addListener('click', () => {
+              setActiveNodeId(node.id);
+              infoRef.current.setContent(nodeInfoHtml(node));
+              infoRef.current.open(mapRef.current, marker);
+            });
+            overlaysRef.current.push(marker);
+          });
+        }
+
+        if (hasBounds && mode === 'trip') mapRef.current.fitBounds(bounds, 80);
+        else if (hasBounds && !selectedHomeTrip) mapRef.current.fitBounds(bounds, 80);
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : 'Google Maps 加载失败'));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, selectedHomeTrip, selectedHomeSlug, setActiveNodeId, trips, visibleEdges, visibleNodes, visibleTransportRoutes]);
+
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full" />
+      {error && (
+        <div className="absolute inset-0 z-[10000] flex items-center justify-center bg-slate-950/70 p-6 text-center text-white backdrop-blur-sm">
+          <div className="max-w-sm rounded-3xl border border-white/15 bg-slate-950/80 p-5 shadow-2xl">
+            <div className="text-sm font-black">Google Maps 未启用</div>
+            <div className="mt-2 text-xs font-semibold text-slate-300">{error}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
+  mode,
+  trips,
+  selectedHomeTrip,
+  selectedHomeSlug,
+  visibleNodes,
+  visibleTransportRoutes,
+  visibleEdges,
+  nodes,
+  activeNodeId,
+  setActiveNodeId,
+  onSelectHomeTrip,
+  onOpenHomeTrip,
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<any>(null);
+  const overlaysRef = useRef<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadAmap(amapBrowserKey(), amapSecurityCode())
+      .then((AMap) => {
+        if (cancelled || !containerRef.current) return;
+        setError(null);
+        const centerSource = selectedHomeTrip ? [selectedHomeTrip.center_lat, selectedHomeTrip.center_lng] : [34, 108];
+        const [centerLat, centerLng] = toProviderPoint(centerSource[0], centerSource[1], 'amap');
+        if (!mapRef.current) {
+          mapRef.current = new AMap.Map(containerRef.current, {
+            center: [centerLng, centerLat],
+            zoom: selectedHomeTrip ? 5 : 4,
+            viewMode: '2D',
+          });
+          mapRef.current.addControl(new AMap.Scale());
+          mapRef.current.addControl(new AMap.ToolBar({ position: 'RB' }));
+        }
+        overlaysRef.current.forEach((overlay) => mapRef.current.remove(overlay));
+        overlaysRef.current = [];
+        const boundsPoints: [number, number][] = [];
+        const remember = (lat: number, lng: number) => {
+          const [gcjLat, gcjLng] = toProviderPoint(lat, lng, 'amap');
+          boundsPoints.push([gcjLng, gcjLat]);
+          return [gcjLng, gcjLat] as [number, number];
+        };
+
+        if (mode === 'home') {
+          trips.forEach((trip) => {
+            const position = remember(trip.center_lat, trip.center_lng);
+            const marker = new AMap.Marker({
+              map: mapRef.current,
+              position,
+              title: trip.title,
+              label: { content: trip.title, direction: 'top' },
+            });
+            marker.on('click', () => {
+              onSelectHomeTrip?.(trip.slug);
+              window.setTimeout(() => onOpenHomeTrip?.(trip.slug), 650);
+            });
+            overlaysRef.current.push(marker);
+          });
+        } else {
+          visibleTransportRoutes.forEach((route) => {
+            const path = transportPath(route).map(([lat, lng]) => remember(lat, lng));
+            if (path.length < 2) return;
+            const selected = activeNodeId === route.id;
+            const style = transportLineStyle(route, selected);
+            const line = new AMap.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: String(style.color || '#0ea5e9'),
+              strokeOpacity: Number(style.opacity || 0.8),
+              strokeWeight: Number(style.weight || 3),
+              strokeStyle: selected ? 'solid' : 'dashed',
+            });
+            line.on('click', () => setActiveNodeId(route.id));
+            overlaysRef.current.push(line);
+          });
+          visibleEdges.forEach((edge) => {
+            const src = nodes.find((node) => node.id === edge.source);
+            const target = nodes.find((node) => node.id === edge.target);
+            if (!src || !target) return;
+            const line = new AMap.Polyline({
+              map: mapRef.current,
+              path: [remember(src.lat, src.lng), remember(target.lat, target.lng)],
+              strokeColor: '#94a3b8',
+              strokeOpacity: 0.62,
+              strokeWeight: 2,
+              strokeStyle: 'dashed',
+            });
+            overlaysRef.current.push(line);
+          });
+          visibleNodes.forEach((node) => {
+            const position = remember(node.lat, node.lng);
+            const marker = new AMap.Marker({
+              map: mapRef.current,
+              position,
+              title: node.title,
+              content: `<div style="width:${activeNodeId === node.id ? 32 : 26}px;height:${activeNodeId === node.id ? 32 : 26}px;border-radius:999px;background:${nodeColor(node)};border:3px solid white;box-shadow:0 10px 24px rgba(15,23,42,.25)"></div>`,
+              offset: new AMap.Pixel(-13, -13),
+            });
+            marker.on('click', () => setActiveNodeId(node.id));
+            overlaysRef.current.push(marker);
+          });
+        }
+        if (boundsPoints.length) mapRef.current.setFitView(overlaysRef.current, false, [70, 70, 70, 70]);
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : '高德地图加载失败'));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, selectedHomeTrip, selectedHomeSlug, setActiveNodeId, trips, visibleEdges, visibleNodes, visibleTransportRoutes]);
+
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full" />
+      {error && (
+        <div className="absolute inset-0 z-[10000] flex items-center justify-center bg-slate-950/70 p-6 text-center text-white backdrop-blur-sm">
+          <div className="max-w-sm rounded-3xl border border-white/15 bg-slate-950/80 p-5 shadow-2xl">
+            <div className="text-sm font-black">高德地图未启用</div>
+            <div className="mt-2 text-xs font-semibold text-slate-300">{error}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = null, onSelectHomeTrip, onOpenHomeTrip }: MapViewProps) {
   const { 
+    trip,
     nodes, 
     edges, 
     activeNodeId, 
@@ -360,6 +803,43 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
   };
 
   const selectedHomeTrip = trips.find((trip) => trip.slug === selectedHomeSlug) || null;
+  const activeProvider = mode === 'home'
+    ? mapProviderForTrip(selectedHomeTrip)
+    : mapProviderForTrip(trip);
+  const sdkMapProps: ProviderMapCanvasProps = {
+    provider: activeProvider,
+    mode,
+    trips,
+    selectedHomeTrip,
+    selectedHomeSlug,
+    visibleNodes,
+    visibleTransportRoutes,
+    visibleEdges,
+    nodes,
+    activeNodeId,
+    setActiveNodeId,
+    onSelectHomeTrip,
+    onOpenHomeTrip,
+  };
+  const providerHasBrowserKey = activeProvider === 'google' ? Boolean(googleMapsBrowserKey()) : Boolean(amapBrowserKey());
+
+  if (providerHasBrowserKey) {
+    return (
+      <div className="relative isolate z-0 h-full w-full overflow-hidden bg-slate-100">
+        {preview && (
+          <ImagePreviewModal
+            images={imagesOf(preview.node)}
+            index={preview.index}
+            title={preview.node.title}
+            onClose={() => setPreview(null)}
+            onIndexChange={(index) => setPreview({ ...preview, index })}
+          />
+        )}
+        {activeProvider === 'google' ? <GoogleMapCanvas {...sdkMapProps} /> : <AmapCanvas {...sdkMapProps} />}
+      </div>
+    );
+  }
+
   return (
     <div className="relative isolate z-0 h-full w-full overflow-hidden bg-slate-100">
       {preview && (
@@ -371,10 +851,12 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
           onIndexChange={(index) => setPreview({ ...preview, index })}
         />
       )}
+      <ProviderMissingFallback provider={activeProvider}>
       
       {mode === 'trip' && <div className="absolute bottom-7 left-[calc(33.333%+2rem)] z-[9999] hidden items-center gap-3 rounded-full border border-white/70 bg-white/80 px-3 py-2 text-[9px] font-bold text-slate-600 shadow-lg backdrop-blur-md md:flex">
-        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-sky-400" /><Plane className="h-3 w-3 text-sky-500" />区间交通</span>
-        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-slate-400" />地面路线</span>
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-blue-600" /><Plane className="h-3 w-3 text-blue-600" />航班/跨城</span>
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-sky-600" /><Car className="h-3 w-3 text-sky-600" />地面交通</span>
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-slate-400" />地点接续</span>
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-sky-500 ring-2 ring-white" />区间端点 / 转机</span>
       </div>}
 
@@ -494,6 +976,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
           />
         ))}
       </MapContainer>
+      </ProviderMissingFallback>
     </div>
   );
 }

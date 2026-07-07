@@ -1,4 +1,5 @@
 node_modules/
+.venv/
 dist/
 .env
 .idea/
@@ -8,3 +9,4 @@ __pycache__/
 *.pyc
 .DS_Store
 .runtime/
+.playwright-cli/

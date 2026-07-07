@@ -1,8 +1,12 @@
-import React, { useEffect, useState } from 'react';
-import { CircleMarker, MapContainer, TileLayer, useMap, useMapEvents } from 'react-leaflet';
+import React, { useEffect, useRef, useState } from 'react';
 import { Check, Globe2, LoaderCircle, MapIcon, MapPin, Search } from 'lucide-react';
+import { CoordinateSystem, MapProvider, PlaceProvider } from '../../types';
+import { gcj02ToWgs84, isInMainlandChina, toProviderPoint } from '../../map/coordinates';
+import { amapBrowserKey, amapSecurityCode, mapProviderLabel } from '../../map/provider';
+import { googleMapsBrowserKey } from '../../map/provider';
+import { loadAmap, loadGoogleMaps } from '../../map/scriptLoaders';
 
-type LocationProvider = 'amap' | 'osm';
+type LocationProvider = MapProvider | 'osm';
 
 export interface LocationValue {
   lat: number;
@@ -10,6 +14,9 @@ export interface LocationValue {
   city?: string;
   address?: string;
   title?: string;
+  place_provider?: PlaceProvider;
+  provider_place_id?: string;
+  coord_system?: CoordinateSystem;
 }
 
 interface SearchResult {
@@ -19,35 +26,118 @@ interface SearchResult {
   lng: number;
   city: string;
   provider: LocationProvider;
+  provider_place_id?: string;
+  coord_system?: CoordinateSystem;
 }
 
 interface LocationPickerProps {
   value: LocationValue;
   onChange: (value: LocationValue) => void;
   compact?: boolean;
+  provider?: MapProvider;
+  allowProviderSwitch?: boolean;
+  regionCode?: string;
 }
 
 const searchCache = new Map<string, SearchResult[]>();
 
-function isInChina(lat: number, lng: number) {
-  return lng >= 72.004 && lng <= 137.8347 && lat >= 0.8293 && lat <= 55.8271;
-}
+type ProviderMiniMapProps = {
+  value: LocationValue;
+  provider: MapProvider;
+  onPick: (lat: number, lng: number) => void;
+};
 
-function MapController({ value }: { value: LocationValue }) {
-  const map = useMap();
+const ProviderMiniMap: React.FC<ProviderMiniMapProps> = ({
+  value,
+  provider,
+  onPick,
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<any>(null);
+  const markerRef = useRef<any>(null);
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
-    map.flyTo([value.lat, value.lng], 13, { duration: 0.8 });
-  }, [map, value.lat, value.lng]);
-  return null;
-}
+    let cancelled = false;
+    if (!containerRef.current) return;
+    setError(null);
 
-function ClickPicker({ onPick }: { onPick: (lat: number, lng: number) => void }) {
-  useMapEvents({ click: (event) => onPick(event.latlng.lat, event.latlng.lng) });
-  return null;
-}
+    if (provider === 'google') {
+      loadGoogleMaps(googleMapsBrowserKey())
+        .then((maps) => {
+          if (cancelled || !containerRef.current) return;
+          if (!mapRef.current) {
+            mapRef.current = new maps.Map(containerRef.current, {
+              center: { lat: value.lat, lng: value.lng },
+              zoom: 13,
+              mapTypeControl: false,
+              streetViewControl: false,
+              fullscreenControl: false,
+              clickableIcons: false,
+            });
+            mapRef.current.addListener('click', (event: any) => {
+              if (event.latLng) onPick(event.latLng.lat(), event.latLng.lng());
+            });
+          }
+          mapRef.current.setCenter({ lat: value.lat, lng: value.lng });
+          if (!markerRef.current) {
+            markerRef.current = new maps.Marker({
+              map: mapRef.current,
+              position: { lat: value.lat, lng: value.lng },
+            });
+          } else {
+            markerRef.current.setPosition({ lat: value.lat, lng: value.lng });
+          }
+        })
+        .catch((reason) => !cancelled && setError(reason instanceof Error ? reason.message : 'Google 地图加载失败'));
+    } else {
+      loadAmap(amapBrowserKey(), amapSecurityCode())
+        .then((AMap) => {
+          if (cancelled || !containerRef.current) return;
+          const [gcjLat, gcjLng] = toProviderPoint(value.lat, value.lng, 'amap');
+          if (!mapRef.current) {
+            mapRef.current = new AMap.Map(containerRef.current, {
+              center: [gcjLng, gcjLat],
+              zoom: 13,
+              viewMode: '2D',
+            });
+            mapRef.current.on('click', (event: any) => {
+              const [wgsLat, wgsLng] = gcj02ToWgs84(event.lnglat.lat, event.lnglat.lng);
+              onPick(wgsLat, wgsLng);
+            });
+          }
+          mapRef.current.setCenter([gcjLng, gcjLat]);
+          if (!markerRef.current) {
+            markerRef.current = new AMap.Marker({ map: mapRef.current, position: [gcjLng, gcjLat] });
+          } else {
+            markerRef.current.setPosition([gcjLng, gcjLat]);
+          }
+        })
+        .catch((reason) => !cancelled && setError(reason instanceof Error ? reason.message : '高德地图加载失败'));
+    }
 
-export default function LocationPicker({ value, onChange, compact = false }: LocationPickerProps) {
-  const [provider, setProvider] = useState<LocationProvider>(() => (isInChina(value.lat, value.lng) ? 'amap' : 'osm'));
+    return () => {
+      cancelled = true;
+    };
+  }, [onPick, provider, value.lat, value.lng]);
+
+  return (
+    <div className="relative h-48 overflow-hidden rounded-xl border border-white shadow-inner">
+      <div ref={containerRef} className="h-full w-full" />
+      {error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/70 px-6 text-center text-[10px] font-bold text-white backdrop-blur-sm">
+          <MapPin className="mb-2 h-5 w-5 text-indigo-200" />
+          <span>{error}</span>
+          <span className="mt-1 text-[9px] font-medium text-slate-300">仍可通过搜索选择地点</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default function LocationPicker({ value, onChange, compact = false, provider: forcedProvider, allowProviderSwitch = false, regionCode = '' }: LocationPickerProps) {
+  const [localProvider, setLocalProvider] = useState<MapProvider>(() => (isInMainlandChina(value.lat, value.lng) ? 'amap' : 'google'));
+  const provider = forcedProvider || localProvider;
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -55,8 +145,9 @@ export default function LocationPicker({ value, onChange, compact = false }: Loc
   const [cacheHit, setCacheHit] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const switchProvider = (nextProvider: LocationProvider) => {
-    setProvider(nextProvider);
+  const switchProvider = (nextProvider: MapProvider) => {
+    if (forcedProvider && !allowProviderSwitch) return;
+    setLocalProvider(nextProvider);
     setResults([]);
     setError(null);
     setCacheHit(false);
@@ -69,7 +160,7 @@ export default function LocationPicker({ value, onChange, compact = false }: Loc
       return;
     }
 
-    const cacheKey = `${provider}:${normalizedQuery.toLocaleLowerCase()}`;
+    const cacheKey = `${provider}:${regionCode}:${Math.round(value.lat * 10) / 10}:${Math.round(value.lng * 10) / 10}:${normalizedQuery.toLocaleLowerCase()}`;
     const cached = searchCache.get(cacheKey);
     if (cached) {
       setResults(cached);
@@ -82,7 +173,7 @@ export default function LocationPicker({ value, onChange, compact = false }: Loc
     setCacheHit(false);
     setError(null);
     try {
-      const response = await fetch(`/api/geocode/search?q=${encodeURIComponent(normalizedQuery)}&provider=${provider}`);
+      const response = await fetch(`/api/geocode/search?q=${encodeURIComponent(normalizedQuery)}&provider=${provider}&region=${encodeURIComponent(regionCode)}&lat=${value.lat}&lng=${value.lng}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '地点搜索失败');
       searchCache.set(cacheKey, data);
@@ -102,6 +193,9 @@ export default function LocationPicker({ value, onChange, compact = false }: Loc
       city: result.city,
       address: result.display_name,
       title: result.name,
+      place_provider: result.provider === 'osm' ? 'manual' : result.provider,
+      provider_place_id: result.provider_place_id,
+      coord_system: result.coord_system || 'wgs84',
     });
     setQuery(result.name);
     setResults([]);
@@ -115,7 +209,16 @@ export default function LocationPicker({ value, onChange, compact = false }: Loc
       const response = await fetch(`/api/geocode/reverse?lat=${lat}&lng=${lng}&provider=${provider}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '地址解析失败');
-      onChange({ ...value, lat, lng, city: data.city || value.city, address: data.display_name || value.address });
+      onChange({
+        ...value,
+        lat,
+        lng,
+        city: data.city || value.city,
+        address: data.display_name || value.address,
+        place_provider: data.provider === 'osm' ? 'manual' : data.provider,
+        provider_place_id: data.provider_place_id || value.provider_place_id,
+        coord_system: data.coord_system || 'wgs84',
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '已选择位置，但地址解析失败');
     } finally {
@@ -123,7 +226,7 @@ export default function LocationPicker({ value, onChange, compact = false }: Loc
     }
   };
 
-  const providerLabel = provider === 'amap' ? '高德地图' : 'OpenStreetMap';
+  const providerLabel = mapProviderLabel[provider];
 
   return (
     <div className="space-y-3 rounded-2xl border border-indigo-100 bg-indigo-50/45 p-3">
@@ -132,22 +235,29 @@ export default function LocationPicker({ value, onChange, compact = false }: Loc
           <MapPin className="h-3.5 w-3.5 text-indigo-600" />
           选择地点
         </span>
-        <div className="flex rounded-lg border border-indigo-100 bg-white/80 p-0.5 text-[10px] font-bold">
-          <button
-            type="button"
-            onClick={() => switchProvider('amap')}
-            className={`flex items-center gap-1 rounded-md px-2.5 py-1.5 transition ${provider === 'amap' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-indigo-700'}`}
-          >
-            <MapIcon className="h-3 w-3" /> 国内
-          </button>
-          <button
-            type="button"
-            onClick={() => switchProvider('osm')}
-            className={`flex items-center gap-1 rounded-md px-2.5 py-1.5 transition ${provider === 'osm' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-indigo-700'}`}
-          >
-            <Globe2 className="h-3 w-3" /> 海外
-          </button>
-        </div>
+        {forcedProvider && !allowProviderSwitch ? (
+          <span className="flex items-center gap-1.5 rounded-lg border border-indigo-100 bg-white/80 px-2.5 py-1.5 text-[10px] font-black text-indigo-700">
+            {provider === 'amap' ? <MapIcon className="h-3 w-3" /> : <Globe2 className="h-3 w-3" />}
+            {providerLabel}
+          </span>
+        ) : (
+          <div className="flex rounded-lg border border-indigo-100 bg-white/80 p-0.5 text-[10px] font-bold">
+            <button
+              type="button"
+              onClick={() => switchProvider('amap')}
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1.5 transition ${provider === 'amap' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-indigo-700'}`}
+            >
+              <MapIcon className="h-3 w-3" /> 国内
+            </button>
+            <button
+              type="button"
+              onClick={() => switchProvider('google')}
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1.5 transition ${provider === 'google' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-indigo-700'}`}
+            >
+              <Globe2 className="h-3 w-3" /> 境外
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex gap-2">
@@ -162,7 +272,7 @@ export default function LocationPicker({ value, onChange, compact = false }: Loc
                 void search();
               }
             }}
-            placeholder={provider === 'amap' ? '搜索国内景点、酒店或地址' : '搜索海外地点或英文地址'}
+            placeholder={provider === 'amap' ? '搜索国内景点、酒店或地址' : '中文搜索海外景点、酒店或地址'}
             className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 pl-9 text-xs outline-none focus:border-indigo-400"
           />
         </div>
@@ -196,7 +306,7 @@ export default function LocationPicker({ value, onChange, compact = false }: Loc
                 <span className="flex items-center justify-between gap-2 text-[11px] font-bold text-slate-800">
                   <span>{result.name}</span>
                   <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[8px] text-slate-400">
-                    {result.provider === 'amap' ? '高德' : 'OSM'}
+                    {result.provider === 'amap' ? '高德' : result.provider === 'google' ? 'Google' : '手动'}
                   </span>
                 </span>
                 <span className="mt-0.5 block line-clamp-2 text-[9px] leading-relaxed text-slate-400">{result.display_name}</span>
@@ -207,14 +317,7 @@ export default function LocationPicker({ value, onChange, compact = false }: Loc
       )}
       {error && <p className="text-[10px] text-amber-700">{error}</p>}
 
-      {!compact && <div className="h-48 overflow-hidden rounded-xl border border-white shadow-inner">
-        <MapContainer center={[value.lat, value.lng]} zoom={12} zoomControl={false} className="h-full w-full">
-          <TileLayer attribution='&copy; <a href="https://carto.com/">CARTO</a>' url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" />
-          <MapController value={value} />
-          <ClickPicker onPick={(lat, lng) => void pickOnMap(lat, lng)} />
-          <CircleMarker center={[value.lat, value.lng]} radius={9} pathOptions={{ color: '#fff', weight: 3, fillColor: '#4f46e5', fillOpacity: 1 }} />
-        </MapContainer>
-      </div>}
+      {!compact && <ProviderMiniMap key={provider} value={value} provider={provider} onPick={(lat, lng) => void pickOnMap(lat, lng)} />}
 
       <div className="flex items-start gap-2 rounded-xl bg-white/75 p-2.5">
         {resolving ? <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-indigo-500" /> : <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />}

@@ -26,6 +26,7 @@ import LocationPicker from '../components/LocationPicker/LocationPicker';
 import MapView from '../components/Map/MapView';
 import { useItineraryStore } from '../store/useItineraryStore';
 import { ItineraryNode, ItineraryType, TransportMode } from '../types';
+import { mapProviderForTrip } from '../map/provider';
 import { compareItineraryNodes, isScheduledNode, isUnscheduledPointNode } from '../utils/itinerary';
 import {
   BEIJING_TIMEZONE,
@@ -46,7 +47,9 @@ const END_MINUTES = 24 * 60;
 const SLOT_MINUTES = 30;
 const SLOT_HEIGHT = 34;
 const SCHEDULE_SNAP_MINUTES = SLOT_MINUTES;
-const CONNECTION_SNAP_THRESHOLD_MINUTES = 10;
+const CONNECTION_APPROACH_THRESHOLD_MINUTES = SCHEDULE_SNAP_MINUTES;
+const CONNECTION_RELEASE_THRESHOLD_MINUTES = SCHEDULE_SNAP_MINUTES;
+const CONNECTION_GAP_MINUTES = 0;
 
 const pointTypeOptions: Array<{ value: Exclude<ItineraryType, 'transport'>; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { value: 'sightseeing', label: '景点', icon: MapPin },
@@ -177,6 +180,13 @@ const emptyForm = ({
     departure_lng: null,
     arrival_lat: null,
     arrival_lng: null,
+    place_provider: 'manual',
+    provider_place_id: '',
+    coord_system: 'wgs84',
+    departure_place_provider: 'manual',
+    departure_provider_place_id: '',
+    arrival_place_provider: 'manual',
+    arrival_provider_place_id: '',
   };
 };
 
@@ -252,7 +262,7 @@ const eventDurationMinutes = (node: ItineraryNode) => {
     const start = parseTime(node.time);
     const endDay = node.end_day && node.end_day >= node.day ? node.end_day : node.day;
     const end = parseTime(node.end_time) + (endDay - node.day) * END_MINUTES;
-    if (end > start) return Math.max(SCHEDULE_SNAP_MINUTES, Math.min(END_MINUTES, end - start));
+    if (end > start) return Math.max(SCHEDULE_SNAP_MINUTES, end - start);
   }
 
   const parsed = parseDurationMinutes(node.duration);
@@ -271,6 +281,9 @@ const clampDurationMinutes = (minutes: number, maxMinutes = 12 * 60) => {
   const snapped = Math.round(minutes / SCHEDULE_SNAP_MINUTES) * SCHEDULE_SNAP_MINUTES;
   return Math.max(SLOT_MINUTES, Math.min(maxMinutes, snapped));
 };
+
+const clampDurationRange = (minutes: number, maxMinutes: number) =>
+  Math.max(SLOT_MINUTES, Math.min(maxMinutes, Math.round(minutes)));
 
 const formatDurationText = (minutes: number) => {
   const safe = Math.max(SLOT_MINUTES, Math.round(minutes));
@@ -333,6 +346,12 @@ const endFromStart = (
     end_date: dateByDay.get(endDay) || (date ? addDays(date, dayOffset) : ''),
     end_time: formatTime(endMinutes),
   };
+};
+
+const durationBetweenRange = (startDay: number, startTime: string, endDay: number, endTime: string) => {
+  const start = (Math.max(1, startDay) - 1) * END_MINUTES + parseTime(startTime);
+  const end = (Math.max(1, endDay) - 1) * END_MINUTES + parseTime(endTime);
+  return end > start ? end - start : null;
 };
 
 const snapScheduleMinutes = (minutes: number) => {
@@ -462,6 +481,18 @@ type ScheduleEvent = {
   arrivalDay: number;
 };
 
+type ScheduleDragPreview = {
+  nodeId: string;
+  visibleDay: number;
+  startAbsolute: number;
+  start: number;
+  end: number;
+  connected: boolean;
+  title: string;
+  detail: string;
+  durationText: string;
+};
+
 type LibraryFilter = 'all' | ItineraryType;
 
 const libraryFilterOrder: ItineraryType[] = ['sightseeing', 'hotel', 'restaurant', 'transfer', 'leisure', 'shopping'];
@@ -474,25 +505,41 @@ const dayForDate = (date: string | undefined, dateByDay: Map<number, string>, tr
   return dayFromStartDate(date, tripStartDate);
 };
 
-const nodeDaySpan = (node: ItineraryNode, dateByDay: Map<number, string>, tripStartDate?: string) => {
+const nodeScheduleRange = (node: ItineraryNode, dateByDay: Map<number, string>, tripStartDate?: string) => {
   const departureDay = node.day || dayForDate(node.date, dateByDay, tripStartDate) || 1;
-  if (node.end_day && node.end_day >= departureDay) {
-    return { departureDay, arrivalDay: node.end_day };
+  const start = parseTime(node.time);
+  const startAbsolute = (departureDay - 1) * END_MINUTES + start;
+
+  let endDay = node.end_day || dayForDate(node.end_date, dateByDay, tripStartDate) || 0;
+  let endTime = node.end_time;
+
+  if (!endDay || !endTime) {
+    const explicitArrivalDay = dayForDate(node.arrival_date, dateByDay, tripStartDate);
+    const arrivalOffset = Math.max(0, dateDeltaDays(node.date, node.arrival_date) || 0);
+    const inferredOvernight = Boolean(
+      node.arrival_time &&
+      parseTime(node.arrival_time) <= parseTime(node.time) &&
+      (!node.arrival_date || node.arrival_date === node.date),
+    );
+    endDay = node.type === 'transport'
+      ? explicitArrivalDay || departureDay + arrivalOffset + (inferredOvernight ? 1 : 0)
+      : departureDay + Math.floor((start + eventDurationMinutes(node)) / END_MINUTES);
+    endTime = node.type === 'transport' && node.arrival_time
+      ? node.arrival_time
+      : formatTime((start + eventDurationMinutes(node)) % END_MINUTES);
   }
 
-  const explicitArrivalDay = dayForDate(node.arrival_date, dateByDay, tripStartDate);
-  const arrivalOffset = Math.max(0, dateDeltaDays(node.date, node.arrival_date) || 0);
-  const inferredOvernight = Boolean(
-    node.arrival_time &&
-    parseTime(node.arrival_time) <= parseTime(node.time) &&
-    (!node.arrival_date || node.arrival_date === node.date),
-  );
-  const arrivalDay = Math.max(
-    departureDay,
-    node.type === 'transport'
-      ? explicitArrivalDay || departureDay + arrivalOffset + (inferredOvernight ? 1 : 0)
-      : departureDay + Math.floor((parseTime(node.time) + eventDurationMinutes(node)) / END_MINUTES),
-  );
+  let endAbsolute = (Math.max(departureDay, endDay) - 1) * END_MINUTES + parseTime(endTime);
+  if (endAbsolute <= startAbsolute) {
+    endAbsolute = startAbsolute + eventDurationMinutes(node);
+  }
+
+  const arrivalDay = Math.max(departureDay, Math.ceil(endAbsolute / END_MINUTES));
+  return { departureDay, arrivalDay, startAbsolute, endAbsolute };
+};
+
+const nodeDaySpan = (node: ItineraryNode, dateByDay: Map<number, string>, tripStartDate?: string) => {
+  const { departureDay, arrivalDay } = nodeScheduleRange(node, dateByDay, tripStartDate);
   return { departureDay, arrivalDay };
 };
 
@@ -502,60 +549,34 @@ const scheduleSegmentForDay = (
   dateByDay: Map<number, string>,
   tripStartDate?: string,
 ): Omit<ScheduleEvent, 'lane' | 'lanes'> | null => {
-  const { departureDay, arrivalDay } = nodeDaySpan(node, dateByDay, tripStartDate);
+  const { departureDay, arrivalDay, startAbsolute, endAbsolute } = nodeScheduleRange(node, dateByDay, tripStartDate);
   if (day < departureDay || day > arrivalDay) return null;
 
-  if (departureDay === arrivalDay) {
-    const start = Math.max(START_MINUTES, Math.min(END_MINUTES - SLOT_MINUTES, parseTime(node.time)));
-    const explicitEnd = node.end_time ? parseTime(node.end_time) : null;
-    const end = Math.min(END_MINUTES, Math.max(start + SLOT_MINUTES, explicitEnd ?? start + eventDurationMinutes(node)));
-    return {
-      node,
-      start,
-      end,
-      segmentKind: 'single',
-      displayStart: node.time || formatTime(start),
-      displayEnd: node.end_time || (node.type === 'transport' ? node.arrival_time || formatTime(end) : formatTime(end)),
-      departureDay,
-      arrivalDay,
-    };
-  }
+  const dayStart = (day - 1) * END_MINUTES;
+  const dayEnd = dayStart + END_MINUTES;
+  const overlapStart = Math.max(startAbsolute, dayStart);
+  const overlapEnd = Math.min(endAbsolute, dayEnd);
+  if (overlapEnd <= overlapStart) return null;
 
-  if (day === departureDay) {
-    const start = Math.max(START_MINUTES, Math.min(END_MINUTES - SLOT_MINUTES, parseTime(node.time)));
-    return {
-      node,
-      start,
-      end: END_MINUTES,
-      segmentKind: 'start',
-      displayStart: node.time || formatTime(start),
-      displayEnd: '23:59',
-      departureDay,
-      arrivalDay,
-    };
-  }
-
-  if (day === arrivalDay) {
-    const arrival = Math.max(START_MINUTES, Math.min(END_MINUTES, parseTime(node.end_time || node.arrival_time)));
-    return {
-      node,
-      start: START_MINUTES,
-      end: Math.max(SLOT_MINUTES, arrival),
-      segmentKind: 'end',
-      displayStart: '00:00',
-      displayEnd: node.end_time || node.arrival_time || formatTime(Math.max(SLOT_MINUTES, arrival)),
-      departureDay,
-      arrivalDay,
-    };
-  }
+  const start = Math.max(START_MINUTES, overlapStart - dayStart);
+  const end = Math.min(END_MINUTES, overlapEnd - dayStart);
+  const startsHere = overlapStart === startAbsolute;
+  const endsHere = overlapEnd === endAbsolute;
+  const segmentKind: ScheduleSegmentKind = startsHere && endsHere
+    ? 'single'
+    : startsHere
+      ? 'start'
+      : endsHere
+        ? 'end'
+        : 'middle';
 
   return {
     node,
-    start: START_MINUTES,
-    end: END_MINUTES,
-    segmentKind: 'middle',
-    displayStart: '00:00',
-    displayEnd: '23:59',
+    start,
+    end,
+    segmentKind,
+    displayStart: start === START_MINUTES && !startsHere ? '00:00' : node.time || formatTime(start),
+    displayEnd: end === END_MINUTES && !endsHere ? '23:59' : formatTime(end),
     departureDay,
     arrivalDay,
   };
@@ -567,21 +588,42 @@ const layoutScheduleEvents = (
   dateByDay: Map<number, string>,
   tripStartDate?: string,
 ): ScheduleEvent[] => {
-  const laneEnds: number[] = [];
   const events = nodes
     .map((node) => scheduleSegmentForDay(node, day, dateByDay, tripStartDate))
     .filter((event): event is Omit<ScheduleEvent, 'lane' | 'lanes'> => Boolean(event))
     .map((event) => ({ ...event, lane: 0, lanes: 1 }))
     .sort((a, b) => a.start - b.start || a.end - b.end || a.node.title.localeCompare(b.node.title, 'zh-CN'));
 
-  events.forEach((event) => {
-    const lane = laneEnds.findIndex((end) => end <= event.start);
-    event.lane = lane === -1 ? laneEnds.length : lane;
-    laneEnds[event.lane] = event.end;
-  });
+  const groups: ScheduleEvent[][] = [];
+  let currentGroup: ScheduleEvent[] = [];
+  let currentGroupEnd = START_MINUTES;
 
-  const lanes = Math.max(1, laneEnds.length);
-  return events.map((event) => ({ ...event, lanes }));
+  events.forEach((event) => {
+    if (!currentGroup.length || event.start < currentGroupEnd) {
+      currentGroup.push(event);
+      currentGroupEnd = Math.max(currentGroupEnd, event.end);
+      return;
+    }
+
+    groups.push(currentGroup);
+    currentGroup = [event];
+    currentGroupEnd = event.end;
+  });
+  if (currentGroup.length) groups.push(currentGroup);
+
+  return groups.flatMap((group) => {
+    const laneEnds: number[] = [];
+    let groupLaneCount = 1;
+
+    group.forEach((event) => {
+      const lane = laneEnds.findIndex((end) => end <= event.start);
+      event.lane = lane === -1 ? laneEnds.length : lane;
+      laneEnds[event.lane] = event.end;
+      groupLaneCount = Math.max(groupLaneCount, laneEnds.length);
+    });
+
+    return group.map((event) => ({ ...event, lanes: groupLaneCount }));
+  });
 };
 
 export default function AdminView() {
@@ -637,14 +679,30 @@ export default function AdminView() {
   const [pendingUploadUrls, setPendingUploadUrls] = useState<string[]>([]);
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const [resizeDraft, setResizeDraft] = useState<{ nodeId: string; duration: number } | null>(null);
-  const [dragPreview, setDragPreview] = useState<{ nodeId: string; minutes: number; connected: boolean } | null>(null);
+  const [dragPreview, setDragPreview] = useState<ScheduleDragPreview | null>(null);
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>('all');
   const [showBeijingTime, setShowBeijingTime] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scheduleGridRef = useRef<HTMLDivElement>(null);
-  const resizeStateRef = useRef<{ node: ItineraryNode; startY: number; startDuration: number; latestDuration: number; maxDuration: number } | null>(null);
+  const resizeStateRef = useRef<{
+    node: ItineraryNode;
+    startY: number;
+    startDuration: number;
+    latestDuration: number;
+    maxDuration: number;
+    segmentStart: number;
+    segmentOffset: number;
+  } | null>(null);
+  const draggedSegmentOffsetRef = useRef(0);
+  const draggedPointerOffsetRef = useRef(0);
+  const dragPreviewRef = useRef<ScheduleDragPreview | null>(null);
   const inputClass = 'mt-1.5 w-full rounded-xl border border-slate-200 bg-white/85 px-3 py-2.5 text-xs outline-none transition focus:border-indigo-400';
+
+  const clearDragPreview = () => {
+    dragPreviewRef.current = null;
+    setDragPreview(null);
+  };
 
   useEffect(() => {
     if (activeDay === 'all' && dayNumbers.length) setActiveDay(dayNumbers[0]);
@@ -678,6 +736,7 @@ export default function AdminView() {
   const currentDayTimezone = dayTimeZones.get(currentDay) || DEFAULT_TIMEZONE;
   const editingNode = useMemo(() => editingId ? nodes.find((node) => node.id === editingId) || null : null, [editingId, nodes]);
   const editingExistingTransport = editingNode?.type === 'transport';
+  const mapProvider = mapProviderForTrip(trip);
   const currentDayNodes = useMemo(
     () => sortedNodes.filter((node) => isScheduledNode(node) && scheduleSegmentForDay(node, currentDay, dateByDay, trip?.start_date)),
     [currentDay, dateByDay, sortedNodes, trip?.start_date],
@@ -761,6 +820,98 @@ export default function AdminView() {
     [draggedNodeId, nodes],
   );
   const canDropToLibrary = Boolean(draggedNode && draggedNode.type !== 'transport' && isScheduledNode(draggedNode));
+  const isPointFormScheduled = isScheduledNode({ id: editingId || 'draft', ...form });
+
+  const formEndDay = (draft = form) =>
+    draft.end_day || dayForDate(draft.end_date, dateByDay, trip?.start_date) || draft.day || currentDay;
+
+  const formRangeDuration = (draft = form) => {
+    const parsed = parseDurationMinutes(draft.duration);
+    if (!isScheduledNode({ id: editingId || 'draft', ...draft })) {
+      return Math.max(SLOT_MINUTES, parsed || defaultDurationByType[draft.type] || SLOT_MINUTES);
+    }
+    return durationBetweenRange(
+      draft.day || currentDay,
+      draft.time || '12:00',
+      formEndDay(draft),
+      draft.end_time || draft.time || '12:00',
+    ) || Math.max(SLOT_MINUTES, parsed || defaultDurationByType[draft.type] || SLOT_MINUTES);
+  };
+
+  const schedulePointForm = (time = form.time || '12:00') => {
+    setForm((current) => {
+      const day = current.day > 0 ? current.day : currentDay;
+      const date = current.date || dateByDay.get(day) || currentDate;
+      const duration = formRangeDuration({ ...current, day, date, time, status: 'planned' });
+      return {
+        ...current,
+        day,
+        date,
+        time,
+        status: 'planned',
+        duration: current.duration || formatDurationText(duration),
+        ...endFromStart(day, date, time, duration, dateByDay),
+      };
+    });
+  };
+
+  const updatePointStart = (patch: Partial<Pick<ItineraryNode, 'day' | 'date' | 'time'>>) => {
+    setForm((current) => {
+      const duration = formRangeDuration(current);
+      const nextDay = patch.day || (patch.date ? dayForDate(patch.date, dateByDay, trip?.start_date) || current.day || currentDay : current.day || currentDay);
+      const nextDate = patch.date || (patch.day ? dateByDay.get(patch.day) || current.date || currentDate : current.date || currentDate);
+      const nextTime = patch.time || current.time || '12:00';
+      return {
+        ...current,
+        ...patch,
+        day: nextDay,
+        date: nextDate,
+        time: nextTime,
+        status: 'planned',
+        duration: formatDurationText(duration),
+        ...endFromStart(nextDay, nextDate, nextTime, duration, dateByDay),
+      };
+    });
+  };
+
+  const updatePointEnd = (patch: Partial<Pick<ItineraryNode, 'end_day' | 'end_date' | 'end_time'>>) => {
+    setForm((current) => {
+      const nextEndDay = patch.end_day || (patch.end_date ? dayForDate(patch.end_date, dateByDay, trip?.start_date) || current.end_day || current.day : current.end_day || current.day);
+      const clampedEndDay = Math.max(current.day || currentDay, nextEndDay || current.day || currentDay);
+      const nextEndDate = dateByDay.get(clampedEndDay) || patch.end_date || current.end_date || current.date;
+      const next = {
+        ...current,
+        ...patch,
+        end_day: clampedEndDay,
+        end_date: nextEndDate || current.date || currentDate,
+        end_time: patch.end_time || current.end_time || current.time || '12:00',
+        status: 'planned' as const,
+      };
+      const duration = formRangeDuration(next);
+      if (!durationBetweenRange(next.day || currentDay, next.time || '12:00', next.end_day || currentDay, next.end_time || '12:00')) {
+        return {
+          ...next,
+          duration: formatDurationText(SLOT_MINUTES),
+          ...endFromStart(next.day || currentDay, next.date || currentDate, next.time || '12:00', SLOT_MINUTES, dateByDay),
+        };
+      }
+      return { ...next, duration: formatDurationText(duration) };
+    });
+  };
+
+  const updatePointDuration = (value: string) => {
+    setForm((current) => {
+      const parsed = parseDurationMinutes(value);
+      if (!parsed || !isScheduledNode({ id: editingId || 'draft', ...current })) {
+        return { ...current, duration: value };
+      }
+      return {
+        ...current,
+        duration: value,
+        ...endFromStart(current.day || currentDay, current.date || currentDate, current.time || '12:00', parsed, dateByDay),
+      };
+    });
+  };
 
   const toast = (value: string) => {
     setMessage(value);
@@ -827,6 +978,13 @@ export default function AdminView() {
         duration,
         lat: draft.arrival_lat ?? draft.lat,
         lng: draft.arrival_lng ?? draft.lng,
+        place_provider: draft.arrival_place_provider || draft.place_provider || 'manual',
+        provider_place_id: draft.arrival_provider_place_id || draft.provider_place_id || '',
+        coord_system: draft.coord_system || 'wgs84',
+        departure_place_provider: draft.departure_place_provider || 'manual',
+        departure_provider_place_id: draft.departure_provider_place_id || '',
+        arrival_place_provider: draft.arrival_place_provider || 'manual',
+        arrival_provider_place_id: draft.arrival_provider_place_id || '',
       };
     }
 
@@ -834,8 +992,19 @@ export default function AdminView() {
     const fallbackDay = draft.day > 0 ? draft.day : currentDay;
     const fallbackDate = draft.date || currentDate;
     const fallbackTime = draft.time || '12:00';
+    const explicitEndDay = draft.end_day || dayForDate(draft.end_date, dateByDay, trip?.start_date) || draft.day;
+    const explicitDuration = scheduled && draft.end_time
+      ? durationBetweenRange(draft.day, draft.time, explicitEndDay, draft.end_time)
+      : null;
+    const durationMinutes = explicitDuration || parseDurationMinutes(draft.duration) || eventDurationMinutes({ id: 'draft', ...draft });
     const endPatch = scheduled
-      ? endFromStart(draft.day, draft.date, draft.time, eventDurationMinutes({ id: 'draft', ...draft }), dateByDay)
+      ? explicitDuration
+        ? {
+          end_day: explicitEndDay,
+          end_date: draft.end_date || dateByDay.get(explicitEndDay) || addDays(draft.date, explicitEndDay - draft.day),
+          end_time: draft.end_time,
+        }
+        : endFromStart(draft.day, draft.date, draft.time, durationMinutes, dateByDay)
       : { end_day: 0, end_date: '', end_time: '' };
     return {
       ...draft,
@@ -847,10 +1016,14 @@ export default function AdminView() {
         lng: draft.lng,
         fallback: currentDayTimezone,
       })),
+      place_provider: draft.place_provider || 'manual',
+      provider_place_id: draft.provider_place_id || '',
+      coord_system: draft.coord_system || 'wgs84',
       day: scheduled ? draft.day : fallbackDay,
       date: scheduled ? draft.date : fallbackDate,
       time: scheduled ? draft.time : fallbackTime,
       ...endPatch,
+      duration: scheduled ? formatDurationText(durationMinutes) : draft.duration,
       status: scheduled ? draft.status : 'unscheduled',
       transport_mode: undefined,
       departure_place: '',
@@ -864,23 +1037,31 @@ export default function AdminView() {
       departure_lng: null,
       arrival_lat: null,
       arrival_lng: null,
+      departure_place_provider: 'manual',
+      departure_provider_place_id: '',
+      arrival_place_provider: 'manual',
+      arrival_provider_place_id: '',
     };
   };
 
   const reset = ({ cleanupPending = true, kind = 'point', time = '12:00', scheduled = false }: { cleanupPending?: boolean; kind?: 'point' | 'transport'; time?: string; scheduled?: boolean } = {}) => {
     if (cleanupPending) cleanupPendingUploads();
-    setEditingId(null);
-    setForm({
+    const base = {
       ...emptyForm({ day: currentDay, date: currentDate, time, kind, scheduled }),
       timezone: currentDayTimezone,
       departure_timezone: currentDayTimezone,
       arrival_timezone: currentDayTimezone,
-    });
+    };
+    const pointDuration = defaultDurationByType[base.type] || SLOT_MINUTES;
+    setEditingId(null);
+    setForm(kind === 'point' && scheduled
+      ? { ...base, duration: formatDurationText(pointDuration), ...endFromStart(currentDay, currentDate, time, pointDuration, dateByDay) }
+      : base);
     setImageUrlInput('');
     setPendingUploadUrls([]);
   };
 
-  const edit = (node: ItineraryNode) => {
+  const edit = (node: ItineraryNode, focusDay?: number) => {
     cleanupPendingUploads();
     const { id, ...values } = node;
     const scheduled = isScheduledNode(node);
@@ -898,7 +1079,7 @@ export default function AdminView() {
       image_urls: node.image_urls?.length ? node.image_urls : node.image_url ? [node.image_url] : [],
     });
     setPendingUploadUrls([]);
-    if (scheduled) setActiveDay(node.day);
+    if (scheduled) setActiveDay(focusDay || node.day);
     setActiveNodeId(node.id);
   };
 
@@ -992,20 +1173,40 @@ export default function AdminView() {
     }));
   };
 
-  const beginDrag = (event: React.DragEvent<HTMLElement>, node: ItineraryNode) => {
+  const pointerOffsetInEventMinutes = (event: React.DragEvent<HTMLElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (!rect.height) return 0;
+    const offsetY = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+    return (offsetY / SLOT_HEIGHT) * SLOT_MINUTES;
+  };
+
+  const setTransparentDragImage = (event: React.DragEvent<HTMLElement>) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    event.dataTransfer.setDragImage(canvas, 0, 0);
+  };
+
+  const beginDrag = (event: React.DragEvent<HTMLElement>, node: ItineraryNode, segmentOffsetMinutes = 0) => {
     if (node.type === 'transport') {
       event.preventDefault();
       toast('交通项目不可拖动修改，请删除后重新录入');
       return;
     }
+    const pointerOffsetMinutes = pointerOffsetInEventMinutes(event);
     event.dataTransfer.effectAllowed = 'move';
+    setTransparentDragImage(event);
     event.dataTransfer.setData('application/x-itinerary-node', node.id);
+    event.dataTransfer.setData('application/x-itinerary-segment-offset', String(Math.max(0, Math.round(segmentOffsetMinutes))));
+    event.dataTransfer.setData('application/x-itinerary-pointer-offset', String(Math.max(0, Math.round(pointerOffsetMinutes))));
     event.dataTransfer.setData('text/plain', node.id);
+    draggedSegmentOffsetRef.current = Math.max(0, Math.round(segmentOffsetMinutes));
+    draggedPointerOffsetRef.current = Math.max(0, Math.round(pointerOffsetMinutes));
     setDragPreview(null);
     setDraggedNodeId(node.id);
   };
 
-  const scheduleNode = async (nodeId: string, day: number, time: string) => {
+  const scheduleNode = async (nodeId: string, startAbsolute: number, visibleDay = currentDay) => {
     const node = nodes.find((item) => item.id === nodeId);
     if (!node) return;
     if (node.type === 'transport') {
@@ -1013,32 +1214,35 @@ export default function AdminView() {
       return;
     }
 
-    const date = dateByDay.get(day) || node.date || currentDate;
+    const duration = eventDurationMinutes(node);
+    const nextStartAbsolute = Math.max(0, Math.round(startAbsolute));
+    const startDay = Math.floor(nextStartAbsolute / END_MINUTES) + 1;
+    const startMinutes = nextStartAbsolute % END_MINUTES;
+    const startTime = formatTime(startMinutes);
+    const date = dateByDay.get(startDay) || (trip?.start_date ? addDays(trip.start_date, startDay - 1) : node.date || currentDate);
     const patch: Partial<ItineraryNode> = {
-      day,
+      day: startDay,
       date,
-      time,
+      time: startTime,
       timezone: normaliseTimeZone(node.timezone || inferTimeZoneFromLocation({
         place: node.title,
         city: node.city,
         address: node.address,
         lat: node.lat,
         lng: node.lng,
-        fallback: dayTimeZones.get(day) || currentDayTimezone,
+        fallback: dayTimeZones.get(startDay) || currentDayTimezone,
       })),
-      ...endFromStart(day, date, time, eventDurationMinutes(node), dateByDay),
+      ...endFromStart(startDay, date, startTime, duration, dateByDay),
+      duration: formatDurationText(duration),
       status: node.status === 'unscheduled' ? 'planned' : node.status,
     };
-    if (node.type === 'transport' && (!node.arrival_date || node.arrival_date === node.date)) {
-      patch.arrival_date = date;
-    }
 
     try {
       await updateNode(nodeId, patch);
-      setActiveDay(day);
+      setActiveDay(visibleDay);
       setActiveNodeId(nodeId);
       if (editingId === nodeId) setForm((current) => ({ ...current, ...patch }));
-      toast(`已安排：${node.title} · D${day} ${time}`);
+      toast(`已安排：${node.title} · D${startDay} ${startTime}`);
     } catch {
       toast('拖拽排期失败，请重试');
     }
@@ -1051,39 +1255,171 @@ export default function AdminView() {
     return START_MINUTES + (offsetY / SLOT_HEIGHT) * SLOT_MINUTES;
   };
 
-  const nearestScheduleBoundary = (minutes: number, movingNodeId: string, boundary: 'start' | 'end') => {
+  const nearestScheduleBoundary = (
+    minutes: number,
+    movingNodeId: string,
+    boundary: 'start' | 'end',
+    options: { min?: number; max?: number; approachFrom?: 'before' | 'after' | 'either' } = {},
+  ) => {
     let nearest: { minutes: number; distance: number } | null = null;
+    const min = options.min ?? START_MINUTES;
+    const max = options.max ?? END_MINUTES;
+    const approachFrom = options.approachFrom ?? 'either';
     scheduleEvents.forEach((scheduleEvent) => {
       if (scheduleEvent.node.id === movingNodeId) return;
       const candidate = scheduleEvent[boundary];
       if (candidate <= START_MINUTES || candidate >= END_MINUTES) return;
-      const distance = Math.abs(candidate - minutes);
-      if (distance > CONNECTION_SNAP_THRESHOLD_MINUTES) return;
+      if (candidate < min || candidate > max) return;
+      const delta = minutes - candidate;
+      const distance = Math.abs(delta);
+      const threshold = approachFrom === 'before'
+        ? (delta <= 0 ? CONNECTION_APPROACH_THRESHOLD_MINUTES : CONNECTION_RELEASE_THRESHOLD_MINUTES)
+        : approachFrom === 'after'
+          ? (delta >= 0 ? CONNECTION_APPROACH_THRESHOLD_MINUTES : CONNECTION_RELEASE_THRESHOLD_MINUTES)
+          : CONNECTION_APPROACH_THRESHOLD_MINUTES;
+      if (distance >= threshold && distance !== 0) return;
       if (!nearest || distance < nearest.distance) nearest = { minutes: candidate, distance };
     });
     return nearest?.minutes ?? null;
   };
 
-  const snapScheduleStart = (minutes: number, movingNodeId: string) =>
-    nearestScheduleBoundary(minutes, movingNodeId, 'end') ?? snapScheduleMinutes(minutes);
+  const snapSchedulePlacement = (pointerMinutes: number, movingNodeId: string, segmentOffsetMinutes = 0, pointerOffsetMinutes = 0) => {
+    const node = nodes.find((item) => item.id === movingNodeId);
+    const duration = node ? eventDurationMinutes(node) : SLOT_MINUTES;
+    const safeSegmentOffset = Math.max(0, Math.round(segmentOffsetMinutes));
+    const safePointerOffset = Math.max(0, Math.round(pointerOffsetMinutes));
+    const dayStartAbsolute = (currentDay - 1) * END_MINUTES;
+    const rawVisibleStart = Math.max(START_MINUTES, Math.min(END_MINUTES, pointerMinutes - safePointerOffset));
+    const rawStartAbsolute = dayStartAbsolute + rawVisibleStart - safeSegmentOffset;
+    const rawVisibleEnd = rawStartAbsolute + duration - dayStartAbsolute;
+    const snappedVisibleStart = snapScheduleMinutes(rawVisibleStart);
+    const snappedStartAbsolute = dayStartAbsolute + snappedVisibleStart - safeSegmentOffset;
+    const candidates: Array<{ startAbsolute: number; previewMinutes: number; distance: number }> = [];
 
-  const snapScheduleDuration = (start: number, rawDuration: number, maxDuration: number, movingNodeId: string) => {
-    const connectedEnd = nearestScheduleBoundary(start + rawDuration, movingNodeId, 'start');
-    if (connectedEnd != null && connectedEnd > start) {
-      return Math.max(SLOT_MINUTES, Math.min(maxDuration, connectedEnd - start));
+    const connectedStart = nearestScheduleBoundary(rawVisibleStart, movingNodeId, 'end', { approachFrom: 'after' });
+    if (connectedStart != null) {
+      const connectedVisibleStart = Math.min(END_MINUTES - SCHEDULE_SNAP_MINUTES, connectedStart + CONNECTION_GAP_MINUTES);
+      const startAbsolute = dayStartAbsolute + connectedVisibleStart - safeSegmentOffset;
+      candidates.push({
+        startAbsolute,
+        previewMinutes: connectedVisibleStart,
+        distance: Math.abs(connectedStart - rawVisibleStart),
+      });
     }
-    return clampDurationMinutes(rawDuration, maxDuration);
+
+    const connectedEnd = nearestScheduleBoundary(rawVisibleEnd, movingNodeId, 'start', {
+      min: START_MINUTES + SLOT_MINUTES,
+      approachFrom: 'before',
+    });
+    if (connectedEnd != null) {
+      const connectedVisibleEnd = Math.max(START_MINUTES + SLOT_MINUTES, connectedEnd - CONNECTION_GAP_MINUTES);
+      const startAbsolute = dayStartAbsolute + connectedVisibleEnd - duration;
+      const previewMinutes = startAbsolute + safeSegmentOffset - dayStartAbsolute;
+      if (previewMinutes >= START_MINUTES && previewMinutes <= END_MINUTES - SCHEDULE_SNAP_MINUTES) {
+        candidates.push({
+          startAbsolute,
+          previewMinutes,
+          distance: Math.abs(connectedEnd - rawVisibleEnd),
+        });
+      }
+    }
+
+    const connected = candidates.sort((left, right) => left.distance - right.distance)[0];
+    if (connected) {
+      return {
+        startAbsolute: Math.max(0, connected.startAbsolute),
+        minutes: Math.max(START_MINUTES, Math.min(END_MINUTES - SCHEDULE_SNAP_MINUTES, connected.previewMinutes)),
+        connected: true,
+      };
+    }
+
+    return {
+      startAbsolute: Math.max(0, snappedStartAbsolute),
+      minutes: snappedVisibleStart,
+      connected: false,
+    };
+  };
+
+  const snapScheduleDuration = (
+    visibleStart: number,
+    segmentOffsetMinutes: number,
+    rawDuration: number,
+    maxDuration: number,
+    movingNodeId: string,
+  ) => {
+    const segmentOffset = Math.max(0, Math.round(segmentOffsetMinutes));
+    const rawEnd = visibleStart + clampDurationRange(rawDuration, maxDuration) - segmentOffset;
+    const snappedDuration = clampDurationMinutes(rawDuration, maxDuration);
+    const connectedEnd = nearestScheduleBoundary(rawEnd, movingNodeId, 'start', {
+      min: visibleStart + SLOT_MINUTES,
+      approachFrom: 'before',
+    });
+    if (connectedEnd != null && connectedEnd > visibleStart) {
+      return Math.max(
+        SLOT_MINUTES,
+        Math.min(maxDuration, segmentOffset + connectedEnd - visibleStart - CONNECTION_GAP_MINUTES),
+      );
+    }
+    return snappedDuration;
   };
 
   const getDraggedNodeId = (event: React.DragEvent<HTMLElement>) =>
     event.dataTransfer.getData('application/x-itinerary-node') || event.dataTransfer.getData('text/plain') || draggedNodeId || '';
 
-  const previewScheduleStart = (rawMinutes: number, movingNodeId: string) => {
-    const connectedStart = nearestScheduleBoundary(rawMinutes, movingNodeId, 'end');
+  const getDraggedSegmentOffset = (event: React.DragEvent<HTMLElement>) => {
+    const raw = event.dataTransfer.getData('application/x-itinerary-segment-offset');
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? Math.max(0, parsed) : draggedSegmentOffsetRef.current;
+  };
+
+  const getDraggedPointerOffset = (event: React.DragEvent<HTMLElement>) => {
+    const raw = event.dataTransfer.getData('application/x-itinerary-pointer-offset');
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? Math.max(0, parsed) : draggedPointerOffsetRef.current;
+  };
+
+  const previewScheduleStart = (rawMinutes: number, movingNodeId: string, segmentOffsetMinutes = 0, pointerOffsetMinutes = 0) =>
+    snapSchedulePlacement(rawMinutes, movingNodeId, segmentOffsetMinutes, pointerOffsetMinutes);
+
+  const createScheduleDragPreview = (
+    rawMinutes: number,
+    movingNodeId: string,
+    segmentOffsetMinutes = 0,
+    pointerOffsetMinutes = 0,
+  ): ScheduleDragPreview | null => {
+    const node = nodes.find((item) => item.id === movingNodeId);
+    if (!node) return null;
+    const placement = previewScheduleStart(rawMinutes, movingNodeId, segmentOffsetMinutes, pointerOffsetMinutes);
+    const segmentOffset = Math.max(0, Math.round(segmentOffsetMinutes));
+    const duration = eventDurationMinutes(node);
+    const dayStartAbsolute = (currentDay - 1) * END_MINUTES;
+    const visibleStart = Math.max(START_MINUTES, Math.min(END_MINUTES - SLOT_MINUTES, placement.minutes));
+    const fullEndAbsolute = placement.startAbsolute + duration;
+    const visibleEndAbsolute = Math.min(dayStartAbsolute + END_MINUTES, fullEndAbsolute);
+    const visibleEnd = Math.max(
+      visibleStart + SLOT_MINUTES,
+      Math.min(END_MINUTES, visibleEndAbsolute - dayStartAbsolute),
+    );
+    const visibleDuration = Math.max(SLOT_MINUTES, duration - segmentOffset);
+
     return {
-      minutes: connectedStart ?? snapScheduleMinutes(rawMinutes),
-      connected: connectedStart != null,
+      nodeId: movingNodeId,
+      visibleDay: currentDay,
+      startAbsolute: placement.startAbsolute,
+      start: visibleStart,
+      end: visibleEnd,
+      connected: placement.connected,
+      title: node.title || '未命名项目',
+      detail: nodeScheduleDetailText(node),
+      durationText: node.duration || formatDurationText(Math.min(duration, visibleDuration)),
     };
+  };
+
+  const maxDurationFromNodeStart = (node: ItineraryNode) => {
+    const lastDay = Math.max(...dayNumbers, node.end_day || node.day || currentDay);
+    const startAbsolute = (Math.max(1, node.day || currentDay) - 1) * END_MINUTES + parseTime(node.time);
+    const tripEndAbsolute = lastDay * END_MINUTES;
+    return Math.max(SLOT_MINUTES, tripEndAbsolute - startAbsolute);
   };
 
   const handleScheduleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
@@ -1091,28 +1427,47 @@ export default function AdminView() {
     if (!nodeId) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
-    const preview = previewScheduleStart(minutesFromSchedulePointer(event.clientY, START_MINUTES), nodeId);
+    const nextPreview = createScheduleDragPreview(
+      minutesFromSchedulePointer(event.clientY, START_MINUTES),
+      nodeId,
+      getDraggedSegmentOffset(event),
+      getDraggedPointerOffset(event),
+    );
+    if (!nextPreview) return;
+    dragPreviewRef.current = nextPreview;
     setDragPreview((current) =>
-      current?.nodeId === nodeId && current.minutes === preview.minutes && current.connected === preview.connected
+      current?.nodeId === nextPreview.nodeId &&
+      current.visibleDay === nextPreview.visibleDay &&
+      current.startAbsolute === nextPreview.startAbsolute &&
+      current.start === nextPreview.start &&
+      current.end === nextPreview.end &&
+      current.connected === nextPreview.connected
         ? current
-        : { nodeId, ...preview },
+        : nextPreview,
     );
   };
 
-  const beginResizeDuration = (event: React.PointerEvent<HTMLElement>, node: ItineraryNode) => {
+  const beginResizeDuration = (
+    event: React.PointerEvent<HTMLElement>,
+    node: ItineraryNode,
+    segmentStart = parseTime(node.time),
+    segmentOffsetMinutes = 0,
+  ) => {
     event.preventDefault();
     event.stopPropagation();
     if (node.type === 'transport') return;
 
     const startDuration = eventDurationMinutes(node);
-    const maxDuration = Math.max(SLOT_MINUTES, END_MINUTES - parseTime(node.time));
-    const initialDuration = clampDurationMinutes(startDuration, maxDuration);
+    const maxDuration = maxDurationFromNodeStart(node);
+    const initialDuration = clampDurationRange(startDuration, maxDuration);
     resizeStateRef.current = {
       node,
       startY: event.clientY,
       startDuration: initialDuration,
       latestDuration: initialDuration,
       maxDuration,
+      segmentStart,
+      segmentOffset: Math.max(0, Math.round(segmentOffsetMinutes)),
     };
     setResizeDraft({ nodeId: node.id, duration: initialDuration });
 
@@ -1120,7 +1475,13 @@ export default function AdminView() {
       const state = resizeStateRef.current;
       if (!state) return;
       const deltaMinutes = ((moveEvent.clientY - state.startY) / SLOT_HEIGHT) * SLOT_MINUTES;
-      const nextDuration = snapScheduleDuration(parseTime(state.node.time), state.startDuration + deltaMinutes, state.maxDuration, state.node.id);
+      const nextDuration = snapScheduleDuration(
+        state.segmentStart,
+        state.segmentOffset,
+        state.startDuration + deltaMinutes,
+        state.maxDuration,
+        state.node.id,
+      );
       state.latestDuration = nextDuration;
       setResizeDraft({ nodeId: state.node.id, duration: nextDuration });
     };
@@ -1154,12 +1515,27 @@ export default function AdminView() {
     event.preventDefault();
     const nodeId = getDraggedNodeId(event);
     if (!nodeId) {
-      setDragPreview(null);
+      clearDragPreview();
       return;
     }
-    void scheduleNode(nodeId, currentDay, formatTime(snapScheduleStart(minutesFromSchedulePointer(event.clientY, START_MINUTES), nodeId)));
+    const latestPreview = dragPreviewRef.current;
+    const placement = latestPreview?.nodeId === nodeId && latestPreview.visibleDay === currentDay
+      ? { startAbsolute: latestPreview.startAbsolute }
+      : previewScheduleStart(
+        minutesFromSchedulePointer(event.clientY, START_MINUTES),
+        nodeId,
+        getDraggedSegmentOffset(event),
+        getDraggedPointerOffset(event),
+      );
+    void scheduleNode(
+      nodeId,
+      placement.startAbsolute,
+      currentDay,
+    );
     setDraggedNodeId(null);
-    setDragPreview(null);
+    draggedSegmentOffsetRef.current = 0;
+    draggedPointerOffsetRef.current = 0;
+    clearDragPreview();
   };
 
   const unscheduleNode = async (nodeId: string) => {
@@ -1171,6 +1547,9 @@ export default function AdminView() {
       day: node.day || currentDay,
       date: node.date || currentDate,
       time: node.time || '12:00',
+      end_day: 0,
+      end_date: '',
+      end_time: '',
       status: 'unscheduled',
     };
 
@@ -1188,7 +1567,9 @@ export default function AdminView() {
     event.preventDefault();
     const nodeId = event.dataTransfer.getData('application/x-itinerary-node') || event.dataTransfer.getData('text/plain') || draggedNodeId;
     setDraggedNodeId(null);
-    setDragPreview(null);
+    draggedSegmentOffsetRef.current = 0;
+    draggedPointerOffsetRef.current = 0;
+    clearDragPreview();
     if (!nodeId) return;
     void unscheduleNode(nodeId);
   };
@@ -1238,8 +1619,8 @@ export default function AdminView() {
     }));
   };
 
-  const startNew = (kind: 'point' | 'transport', time = '12:00') => {
-    reset({ kind, time, scheduled: kind === 'transport' });
+  const startNew = (kind: 'point' | 'transport', time = '12:00', scheduled = kind === 'transport') => {
+    reset({ kind, time, scheduled });
   };
 
   const cancelPointSchedule = async () => {
@@ -1348,10 +1729,12 @@ export default function AdminView() {
                   onDragStart={(event) => beginDrag(event, node)}
                   onDragEnd={() => {
                     setDraggedNodeId(null);
-                    setDragPreview(null);
+                    draggedSegmentOffsetRef.current = 0;
+                    draggedPointerOffsetRef.current = 0;
+                    clearDragPreview();
                   }}
                   onClick={() => edit(node)}
-                  className={`cursor-grab rounded-xl border p-2.5 shadow-sm transition active:cursor-grabbing ${tone.card} hover:border-white hover:bg-white ${activeNodeId === node.id ? 'ring-2 ring-indigo-400/40' : ''}`}
+                  className={`cursor-grab rounded-xl border p-2.5 shadow-sm transition active:cursor-grabbing ${tone.card} hover:border-white hover:bg-white ${activeNodeId === node.id ? 'ring-2 ring-indigo-400/40' : ''} ${draggedNodeId === node.id ? 'opacity-45' : ''}`}
                 >
                   <div className="flex items-stretch gap-3">
                     <div className="relative h-[74px] w-[92px] shrink-0 overflow-hidden rounded-xl border border-white/70 bg-white/65">
@@ -1437,7 +1820,7 @@ export default function AdminView() {
               onDragLeave={(event) => {
                 const nextTarget = event.relatedTarget;
                 if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
-                  setDragPreview(null);
+                  clearDragPreview();
                 }
               }}
               className="relative"
@@ -1454,7 +1837,7 @@ export default function AdminView() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => startNew('point')}
+                    onClick={() => startNew('point', formatTime(minutes), true)}
                     className="h-full w-full text-left transition hover:bg-indigo-50/45"
                     aria-label={`${formatTime(minutes)} 拖入地点项目`}
                   />
@@ -1474,6 +1857,10 @@ export default function AdminView() {
                   const showScheduleDetails = height >= 58;
                   const showScheduleThumb = height >= 74;
                   const canDragEvent = !saving && event.node.type !== 'transport';
+                  const segmentOffsetMinutes = Math.max(
+                    0,
+                    (currentDay - 1) * END_MINUTES + event.start - nodeScheduleRange(event.node, dateByDay, trip?.start_date).startAbsolute,
+                  );
                   if (event.node.type === 'transport') {
                     const transportMode = transportModeOptions.find((option) => option.value === event.node.transport_mode);
                     const TransportIcon = transportMode?.icon || Route;
@@ -1506,7 +1893,7 @@ export default function AdminView() {
                         type="button"
                         draggable={false}
                         onDragStart={(dragEvent) => dragEvent.preventDefault()}
-                        onClick={() => edit(event.node)}
+                        onClick={() => edit(event.node, currentDay)}
                         className={`pointer-events-auto absolute isolate overflow-hidden rounded-xl border px-3 py-2 text-left text-slate-800 backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:shadow-lg ${activeNodeId === event.node.id ? 'ring-2 ring-sky-400/30' : ''}`}
                         style={{
                           top,
@@ -1579,6 +1966,15 @@ export default function AdminView() {
                     ? nodeTimingText(event.node)
                     : `${event.displayStart} - ${event.displayEnd} · ${event.segmentKind === 'start' ? `跨至 D${event.arrivalDay}` : event.segmentKind === 'end' ? `D${event.departureDay} 延续` : '跨天途中'}`;
                   const pointBeijingTime = showBeijingTime ? beijingPointTimeText(event.node, currentDayTimezone) : '';
+                  const compactPointCard = height < 76;
+                  const tinyPointCard = height < 46;
+                  const narrowPointCard = event.lanes > 1;
+                  const compactPointTimeText = event.segmentKind === 'single'
+                    ? [event.displayStart, event.node.duration].filter(Boolean).join(' · ')
+                    : `${event.displayStart}-${event.displayEnd}`;
+                  const showCompactThumb = Boolean(coverUrl) && height >= 42 && (!narrowPointCard || height >= 58);
+                  const showCompactDetail = height >= 42 && (!narrowPointCard || height >= 54);
+                  const showCompactDescription = height >= 60 && !narrowPointCard && Boolean(event.node.description);
                   return (
                     <button
                       key={`${event.node.id}-${currentDay}-${event.segmentKind}`}
@@ -1589,14 +1985,16 @@ export default function AdminView() {
                           dragEvent.preventDefault();
                           return;
                         }
-                        beginDrag(dragEvent, event.node);
+                        beginDrag(dragEvent, event.node, segmentOffsetMinutes);
                       }}
                       onDragEnd={() => {
                         setDraggedNodeId(null);
-                        setDragPreview(null);
+                        draggedSegmentOffsetRef.current = 0;
+                        draggedPointerOffsetRef.current = 0;
+                        clearDragPreview();
                       }}
-                      onClick={() => edit(event.node)}
-                      className={`pointer-events-auto absolute isolate overflow-hidden rounded-xl border px-3 py-2 text-left text-white backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:brightness-105 ${canDragEvent ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} ${activeNodeId === event.node.id ? 'ring-2 ring-slate-950/20' : ''}`}
+                      onClick={() => edit(event.node, currentDay)}
+                      className={`pointer-events-auto absolute isolate overflow-hidden rounded-xl border px-3 py-2 text-left text-white backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:brightness-105 ${canDragEvent ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} ${activeNodeId === event.node.id ? 'ring-2 ring-slate-950/20' : ''} ${draggedNodeId === event.node.id ? 'opacity-35' : ''}`}
                       style={{
                         top,
                         height,
@@ -1618,44 +2016,88 @@ export default function AdminView() {
                       >
                         <X className="h-3 w-3" />
                       </span>
-                      <div className="relative z-10 flex items-center justify-between gap-2 pl-2 text-[9px] font-black text-white/90">
-                        <span className="truncate tabular-nums tracking-wide">{pointTimeText}</span>
-                        <span className="mr-7 shrink-0 rounded-full bg-white/18 px-1.5 py-0.5 text-white/90 backdrop-blur">{typeLabels[event.node.type]}</span>
-                      </div>
-                      <div className={`relative z-10 min-w-0 pl-2 ${showScheduleThumb ? 'mt-1.5 flex items-start gap-2' : 'mt-0.5'}`}>
-                        {showScheduleThumb && (
-                          <div className="h-10 w-12 shrink-0 overflow-hidden rounded-lg border border-white/25 bg-white/16 shadow-inner backdrop-blur">
-                            {coverUrl ? (
+                      {compactPointCard ? (
+                        <div className="relative z-10 flex h-full min-w-0 items-center gap-2 pl-2 pr-7">
+                          {showCompactThumb ? (
+                            <div className={`${narrowPointCard ? 'h-8 w-9' : 'h-9 w-12'} shrink-0 overflow-hidden rounded-lg border border-white/25 bg-white/16 shadow-inner backdrop-blur`}>
                               <img src={coverUrl} alt="" className="h-full w-full object-cover" />
-                            ) : (
-                              <div className="flex h-full w-full items-center justify-center">
-                                <Icon className="h-4 w-4 text-white/78" />
+                            </div>
+                          ) : (
+                            <span className={`${tinyPointCard ? 'h-6 w-6' : 'h-8 w-8'} flex shrink-0 items-center justify-center rounded-lg bg-white/16 text-white/80 backdrop-blur`}>
+                              <Icon className={tinyPointCard ? 'h-3.5 w-3.5' : 'h-4 w-4'} />
+                            </span>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <span className="shrink-0 text-[9px] font-black tabular-nums text-white/95">{compactPointTimeText}</span>
+                              <span className={`${tinyPointCard ? 'text-[10px]' : 'text-[11px]'} min-w-0 flex-1 truncate font-black text-white drop-shadow-sm`}>
+                                {event.node.title}
+                              </span>
+                            </div>
+                            {showCompactDetail && (
+                              <div className="mt-0.5 truncate text-[8px] font-semibold text-white/78">
+                                {nodeScheduleDetailText(event.node)}
+                              </div>
+                            )}
+                            {showCompactDescription && (
+                              <div className="mt-0.5 truncate text-[8px] font-medium text-white/66">
+                                {event.node.description}
+                              </div>
+                            )}
+                            {pointBeijingTime && height >= 58 && !narrowPointCard && (
+                              <div className="mt-0.5 truncate text-[8px] font-black text-white/70">
+                                北京时间 {pointBeijingTime}
                               </div>
                             )}
                           </div>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-[11px] font-black text-white drop-shadow-sm">{event.node.title}</div>
-                          {showScheduleDetails && (
-                            <div className="mt-0.5 truncate text-[9px] font-semibold text-white/82">
-                              {nodeScheduleDetailText(event.node)}
-                            </div>
-                          )}
-                          {pointBeijingTime && (
-                            <div className="mt-0.5 truncate text-[8px] font-black text-white/70">
-                              北京时间 {pointBeijingTime}
-                            </div>
-                          )}
-                          {showScheduleThumb && event.node.description && (
-                            <div className="mt-0.5 line-clamp-1 text-[8px] font-medium leading-tight text-white/68">
-                              {event.node.description}
-                            </div>
+                          {!tinyPointCard && !narrowPointCard && (
+                            <span className="shrink-0 rounded-full bg-white/18 px-1.5 py-0.5 text-[8px] font-black text-white/88 backdrop-blur">
+                              {typeLabels[event.node.type]}
+                            </span>
                           )}
                         </div>
-                      </div>
+                      ) : (
+                        <>
+                          <div className="relative z-10 flex items-center justify-between gap-2 pl-2 text-[9px] font-black text-white/90">
+                            <span className="truncate tabular-nums tracking-wide">{pointTimeText}</span>
+                            <span className="mr-7 shrink-0 rounded-full bg-white/18 px-1.5 py-0.5 text-white/90 backdrop-blur">{typeLabels[event.node.type]}</span>
+                          </div>
+                          <div className={`relative z-10 min-w-0 pl-2 ${showScheduleThumb ? 'mt-1.5 flex items-start gap-2' : 'mt-0.5'}`}>
+                            {showScheduleThumb && (
+                              <div className="h-10 w-12 shrink-0 overflow-hidden rounded-lg border border-white/25 bg-white/16 shadow-inner backdrop-blur">
+                                {coverUrl ? (
+                                  <img src={coverUrl} alt="" className="h-full w-full object-cover" />
+                                ) : (
+                                  <div className="flex h-full w-full items-center justify-center">
+                                    <Icon className="h-4 w-4 text-white/78" />
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-[11px] font-black text-white drop-shadow-sm">{event.node.title}</div>
+                              {showScheduleDetails && (
+                                <div className="mt-0.5 truncate text-[9px] font-semibold text-white/82">
+                                  {nodeScheduleDetailText(event.node)}
+                                </div>
+                              )}
+                              {pointBeijingTime && (
+                                <div className="mt-0.5 truncate text-[8px] font-black text-white/70">
+                                  北京时间 {pointBeijingTime}
+                                </div>
+                              )}
+                              {showScheduleThumb && event.node.description && (
+                                <div className="mt-0.5 line-clamp-1 text-[8px] font-medium leading-tight text-white/68">
+                                  {event.node.description}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      )}
                       <span
                         title="调整时长"
-                        onPointerDown={(pointerEvent) => beginResizeDuration(pointerEvent, event.node)}
+                        onPointerDown={(pointerEvent) => beginResizeDuration(pointerEvent, event.node, event.start, segmentOffsetMinutes)}
                         onClick={(clickEvent) => clickEvent.stopPropagation()}
                         className="absolute inset-x-8 bottom-1 z-20 flex h-3 cursor-ns-resize items-center justify-center rounded-full text-white/80"
                       >
@@ -1679,21 +2121,51 @@ export default function AdminView() {
                 </div>
               ))}
 
-              {dragPreview && (
-                <div
-                  className="pointer-events-none absolute left-[64px] right-3 z-50"
-                  style={{ top: ((dragPreview.minutes - START_MINUTES) / SLOT_MINUTES) * SLOT_HEIGHT }}
-                >
-                  <div className="absolute inset-x-0 top-0 h-px bg-indigo-500 shadow-[0_0_0_1px_rgba(99,102,241,0.14),0_0_18px_rgba(99,102,241,0.3)]" />
-                  <div className="absolute -left-[58px] top-0 flex -translate-y-1/2 items-center gap-1 rounded-full border border-indigo-100 bg-white px-2 py-1 text-[9px] font-black tabular-nums text-indigo-700 shadow-lg">
-                    <span>{formatTime(dragPreview.minutes)}</span>
-                    {dragPreview.connected && (
-                      <span className="rounded-full bg-indigo-50 px-1 text-[8px] text-indigo-600">接续</span>
+              {dragPreview && (() => {
+                const previewTop = ((dragPreview.start - START_MINUTES) / SLOT_MINUTES) * SLOT_HEIGHT + 2;
+                const previewHeight = Math.max(30, ((dragPreview.end - dragPreview.start) / SLOT_MINUTES) * SLOT_HEIGHT - 4);
+                const roomyPreview = previewHeight >= 54;
+                return (
+                  <div
+                    className="pointer-events-none absolute left-[64px] right-3 z-50"
+                    style={{ top: previewTop, height: previewHeight }}
+                  >
+                    <div className="absolute inset-0 rounded-xl border border-indigo-400/80 bg-indigo-500/12 shadow-[0_16px_34px_rgba(79,70,229,0.18),inset_0_1px_0_rgba(255,255,255,0.78)] backdrop-blur-[2px]" />
+                    <div className="absolute inset-x-0 top-0 border-t-2 border-indigo-500" />
+                    <div className="absolute -left-[60px] top-0 flex -translate-y-1/2 items-center gap-1 rounded-full border border-indigo-100 bg-white px-2 py-1 text-[9px] font-black tabular-nums text-indigo-700 shadow-lg">
+                      <span>{formatTime(dragPreview.start)}</span>
+                      <span className="rounded-full bg-indigo-50 px-1 text-[8px] text-indigo-600">
+                        {dragPreview.connected ? '贴合' : '落点'}
+                      </span>
+                    </div>
+                    {roomyPreview && (
+                      <div className="absolute -left-[60px] bottom-0 flex translate-y-1/2 items-center rounded-full border border-slate-100 bg-white px-2 py-1 text-[9px] font-black tabular-nums text-slate-500 shadow-md">
+                        {formatTime(dragPreview.end)}
+                      </div>
                     )}
+                    <div className="relative z-10 flex h-full min-w-0 items-center gap-2 px-3 py-2 text-indigo-950">
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/90 text-indigo-600 shadow-sm">
+                        <GripVertical className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span className="shrink-0 text-[10px] font-black tabular-nums">
+                            {formatTime(dragPreview.start)} - {formatTime(dragPreview.end)}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-[11px] font-black">
+                            {dragPreview.title}
+                          </span>
+                        </div>
+                        {roomyPreview && (
+                          <div className="mt-0.5 truncate text-[9px] font-bold text-indigo-700/75">
+                            {dragPreview.detail || dragPreview.durationText}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <div className="absolute -left-1 top-0 h-2 w-2 -translate-y-1/2 rounded-full bg-indigo-500 shadow-sm" />
-                </div>
-              )}
+                );
+              })()}
             </div>
           </div>
         </section>
@@ -1895,11 +2367,14 @@ export default function AdminView() {
                     出发地
                     <input required value={form.departure_place} onChange={(event) => setForm({ ...form, departure_place: event.target.value })} className={inputClass} />
                   </label>
-                  <LocationPicker compact value={{ lat: form.departure_lat ?? form.lat, lng: form.departure_lng ?? form.lng, title: form.departure_place }} onChange={(location) => setForm((current) => ({
+                  <LocationPicker compact provider={mapProvider} value={{ lat: form.departure_lat ?? form.lat, lng: form.departure_lng ?? form.lng, title: form.departure_place }} onChange={(location) => setForm((current) => ({
                     ...current,
                     departure_place: location.title || current.departure_place,
                     departure_lat: location.lat,
                     departure_lng: location.lng,
+                    coord_system: location.coord_system || current.coord_system || 'wgs84',
+                    departure_place_provider: location.place_provider || current.departure_place_provider || 'manual',
+                    departure_provider_place_id: location.provider_place_id || current.departure_provider_place_id || '',
                     departure_timezone: inferTimeZoneFromLocation({
                       place: location.title || current.departure_place,
                       city: location.city,
@@ -1916,7 +2391,7 @@ export default function AdminView() {
                     到达地
                     <input required value={form.arrival_place} onChange={(event) => setForm({ ...form, arrival_place: event.target.value })} className={inputClass} />
                   </label>
-                  <LocationPicker compact value={{ lat: form.arrival_lat ?? form.lat, lng: form.arrival_lng ?? form.lng, title: form.arrival_place }} onChange={(location) => setForm((current) => {
+                  <LocationPicker compact provider={mapProvider} value={{ lat: form.arrival_lat ?? form.lat, lng: form.arrival_lng ?? form.lng, title: form.arrival_place }} onChange={(location) => setForm((current) => {
                     const arrivalTimezone = inferTimeZoneFromLocation({
                       place: location.title || current.arrival_place,
                       city: location.city,
@@ -1934,6 +2409,9 @@ export default function AdminView() {
                       lng: location.lng,
                       timezone: arrivalTimezone,
                       arrival_timezone: arrivalTimezone,
+                      coord_system: location.coord_system || current.coord_system || 'wgs84',
+                      arrival_place_provider: location.place_provider || current.arrival_place_provider || 'manual',
+                      arrival_provider_place_id: location.provider_place_id || current.arrival_provider_place_id || '',
                     };
                   })} />
                 </div>
@@ -1942,21 +2420,80 @@ export default function AdminView() {
             </div>
           ) : (
             <div className="space-y-3">
-              {isScheduledNode({ id: editingId || 'draft', ...form }) ? (
-                <div className="flex items-center justify-between gap-3 rounded-2xl border border-indigo-100 bg-indigo-50/70 px-3 py-2.5">
-                  <div className="min-w-0">
-                    <div className="text-[10px] font-black text-indigo-700">已排期</div>
-                    <div className="mt-0.5 truncate text-xs font-bold text-slate-700">D{form.day} · {form.date} · {form.time}</div>
+              {isPointFormScheduled ? (
+                <div className="space-y-3 rounded-2xl border border-indigo-100 bg-indigo-50/70 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-black text-indigo-700">时间安排</div>
+                      <div className="mt-0.5 truncate text-xs font-bold text-slate-700">
+                        D{form.day} {form.time} - D{formEndDay()} {form.end_time || '--:--'}
+                      </div>
+                    </div>
+                    {editingId && (
+                      <button type="button" onClick={cancelPointSchedule} className="shrink-0 rounded-xl border border-indigo-200 bg-white px-3 py-2 text-[10px] font-black text-indigo-700 shadow-sm transition hover:border-red-200 hover:text-red-600">
+                        取消排期
+                      </button>
+                    )}
                   </div>
-                  {editingId && (
-                    <button type="button" onClick={cancelPointSchedule} className="shrink-0 rounded-xl border border-indigo-200 bg-white px-3 py-2 text-[10px] font-black text-indigo-700 shadow-sm transition hover:border-red-200 hover:text-red-600">
-                      取消排期
-                    </button>
-                  )}
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className="text-xs font-semibold text-slate-700">
+                      开始 Day
+                      <select value={form.day || currentDay} onChange={(event) => updatePointStart({ day: Number(event.target.value) })} className={inputClass}>
+                        {dayNumbers.map((day) => <option key={day} value={day}>D{day}</option>)}
+                      </select>
+                    </label>
+                    <label className="text-xs font-semibold text-slate-700">
+                      开始日期
+                      <input type="date" value={form.date || currentDate} onChange={(event) => updatePointStart({ date: event.target.value })} className={inputClass} />
+                    </label>
+                    <label className="text-xs font-semibold text-slate-700">
+                      开始时间
+                      <input type="time" value={form.time || '12:00'} onChange={(event) => updatePointStart({ time: event.target.value })} className={inputClass} />
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className="text-xs font-semibold text-slate-700">
+                      结束 Day
+                      <select value={formEndDay()} onChange={(event) => updatePointEnd({ end_day: Number(event.target.value) })} className={inputClass}>
+                        {dayNumbers.map((day) => <option key={day} value={day}>D{day}</option>)}
+                      </select>
+                    </label>
+                    <label className="text-xs font-semibold text-slate-700">
+                      结束日期
+                      <input type="date" value={form.end_date || form.date || currentDate} onChange={(event) => updatePointEnd({ end_date: event.target.value })} className={inputClass} />
+                    </label>
+                    <label className="text-xs font-semibold text-slate-700">
+                      结束时间
+                      <input type="time" value={form.end_time || form.time || '12:00'} onChange={(event) => updatePointEnd({ end_time: event.target.value })} className={inputClass} />
+                    </label>
+                  </div>
+
+                  <label className="block text-xs font-semibold text-slate-700">
+                    持续时长
+                    <input value={form.duration} onChange={(event) => updatePointDuration(event.target.value)} placeholder="例如：1小时30分" className={inputClass} />
+                  </label>
+
+                  <div className="rounded-xl border border-white/70 bg-white/70 px-3 py-2 text-[10px] font-bold text-slate-500">
+                    持续 {formatDurationText(formRangeDuration())} · {timeZoneOptionLabel(form.timezone || currentDayTimezone)}
+                  </div>
                 </div>
               ) : (
-                <div className="rounded-2xl border border-dashed border-slate-200 bg-white/70 px-3 py-2.5 text-[10px] font-black text-slate-500">
-                  待排期项目
+                <div className="space-y-2 rounded-2xl border border-dashed border-slate-200 bg-white/70 px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-black text-slate-500">待排期项目</div>
+                      <div className="mt-0.5 text-[10px] font-semibold text-slate-400">未设置开始结束时间</div>
+                    </div>
+                    <button type="button" onClick={() => schedulePointForm()} className="shrink-0 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-[10px] font-black text-indigo-700 transition hover:bg-indigo-100">
+                      设置时间
+                    </button>
+                  </div>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    默认停留时长
+                    <input value={form.duration} onChange={(event) => setForm({ ...form, duration: event.target.value })} placeholder="例如：1小时30分" className={inputClass} />
+                  </label>
                 </div>
               )}
 
@@ -1980,11 +2517,6 @@ export default function AdminView() {
               )}
 
               <label className="block text-xs font-semibold text-slate-700">
-                停留时长
-                <input value={form.duration} onChange={(event) => setForm({ ...form, duration: event.target.value })} placeholder="例如：1小时30分" className={inputClass} />
-              </label>
-
-              <label className="block text-xs font-semibold text-slate-700">
                 当地时区
                 <select
                   value={form.timezone || currentDayTimezone}
@@ -1997,7 +2529,7 @@ export default function AdminView() {
                 </select>
               </label>
 
-              <LocationPicker value={{ lat: form.lat, lng: form.lng, city: form.city, address: form.address, title: form.title }} onChange={(location) => setForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, title: current.title || location.title || '', timezone: inferTimeZoneFromLocation({ place: location.title || current.title, city: location.city, address: location.address, lat: location.lat, lng: location.lng, fallback: current.timezone || currentDayTimezone }) }))} />
+              <LocationPicker provider={mapProvider} value={{ lat: form.lat, lng: form.lng, city: form.city, address: form.address, title: form.title, place_provider: form.place_provider, provider_place_id: form.provider_place_id, coord_system: form.coord_system }} onChange={(location) => setForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, title: current.title || location.title || '', place_provider: location.place_provider || current.place_provider || 'manual', provider_place_id: location.provider_place_id || current.provider_place_id || '', coord_system: location.coord_system || current.coord_system || 'wgs84', timezone: inferTimeZoneFromLocation({ place: location.title || current.title, city: location.city, address: location.address, lat: location.lat, lng: location.lng, fallback: current.timezone || currentDayTimezone }) }))} />
 
               <div tabIndex={0} onPaste={pasteImage} className="rounded-2xl border border-dashed border-indigo-200 bg-indigo-50/40 p-3 outline-none focus:border-indigo-400">
                 <div className="grid grid-cols-3 gap-2">

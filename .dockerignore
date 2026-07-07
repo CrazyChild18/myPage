@@ -1,5 +1,8 @@
 node_modules
 dist
+.env
+.runtime
+.playwright-cli
 backend/*.db
 !backend/voyageplanner.db
 .git

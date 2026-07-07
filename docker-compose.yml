@@ -1,13 +1,19 @@
 services:
   voyageplanner:
-    build: .
+    build:
+      context: .
+      args:
+        VITE_AMAP_JS_API_KEY: ${VITE_AMAP_JS_API_KEY:-}
+        VITE_AMAP_SECURITY_CODE: ${VITE_AMAP_SECURITY_CODE:-}
+        VITE_GOOGLE_MAPS_BROWSER_KEY: ${VITE_GOOGLE_MAPS_BROWSER_KEY:-}
     container_name: voyageplanner
     restart: unless-stopped
     ports:
-      - "0.0.0.0:25565:8080"
+      - "0.0.0.0:${APP_PORT:-25565}:8080"
     environment:
       AMAP_WEB_SERVICE_KEY: ${AMAP_WEB_SERVICE_KEY:-}
-      OVERSEAS_GEOCODE_PROVIDER: ${OVERSEAS_GEOCODE_PROVIDER:-nominatim}
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      OVERSEAS_GEOCODE_PROVIDER: ${OVERSEAS_GEOCODE_PROVIDER:-google}
     volumes:
       - voyageplanner-data:/data
 

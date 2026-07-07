@@ -10,7 +10,8 @@ import {
   X,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { TripSummary } from '../types';
+import { TripRegion, TripSummary } from '../types';
+import { mapProviderForRegion, tripRegionLabel } from '../map/provider';
 
 interface HomeViewProps {
   onOpenTrip: (slug: string) => void;
@@ -30,7 +31,14 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const [draft, setDraft] = useState({ title: '', start_date: '', end_date: '', origin: '', travelers: 1 });
+  const [draft, setDraft] = useState<{ title: string; start_date: string; end_date: string; origin: string; travelers: number; trip_region: TripRegion }>({
+    title: '',
+    start_date: '',
+    end_date: '',
+    origin: '',
+    travelers: 1,
+    trip_region: 'overseas',
+  });
 
   const focusAndOpenTrip = (slug: string) => {
     onSelectTrip(slug);
@@ -106,6 +114,25 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
             </div>
             <div className="mt-5 space-y-3 text-xs">
               <label className="block font-bold text-slate-300">旅行名称<input required value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="例如：日本关西赏樱" className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2.5 text-white outline-none focus:border-indigo-400" /></label>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-1">
+                <div className="grid grid-cols-2 gap-1">
+                  {(['overseas', 'domestic'] as TripRegion[]).map((region) => {
+                    const active = draft.trip_region === region;
+                    const provider = mapProviderForRegion(region);
+                    return (
+                      <button
+                        key={region}
+                        type="button"
+                        onClick={() => setDraft({ ...draft, trip_region: region })}
+                        className={`rounded-xl px-3 py-2 text-left transition ${active ? 'bg-white text-slate-950 shadow-lg' : 'text-slate-400 hover:bg-white/10 hover:text-white'}`}
+                      >
+                        <span className="block text-xs font-black">{tripRegionLabel[region]}</span>
+                        <span className="mt-0.5 block text-[10px] font-semibold opacity-70">{provider === 'google' ? 'Google Maps' : '高德地图'}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <label className="font-bold text-slate-300">开始日期<input required type="date" value={draft.start_date} onChange={(e) => setDraft({ ...draft, start_date: e.target.value })} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2.5 text-white outline-none" /></label>
                 <label className="font-bold text-slate-300">结束日期<input required type="date" value={draft.end_date} onChange={(e) => setDraft({ ...draft, end_date: e.target.value })} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2.5 text-white outline-none" /></label>
