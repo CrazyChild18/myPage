@@ -531,6 +531,7 @@ const ItineraryNodeMarker: React.FC<ItineraryNodeMarkerProps> = ({
   onPreview,
 }) => {
   const markerRef = useRef<L.Marker>(null);
+  const [hovered, setHovered] = useState(false);
 
   useEffect(() => {
     if (selected) markerRef.current?.openPopup();
@@ -541,8 +542,25 @@ const ItineraryNodeMarker: React.FC<ItineraryNodeMarkerProps> = ({
       ref={markerRef}
       position={[node.lat, node.lng]}
       icon={createCustomMarkerIcon(node, selected)}
-      eventHandlers={{ click: onSelect }}
+      eventHandlers={{ click: onSelect, mouseover: () => setHovered(true), mouseout: () => setHovered(false) }}
     >
+      {hovered && !selected && (
+        <Tooltip direction="top" offset={[0, -34]} opacity={0.98} permanent>
+          <div className="min-w-40 max-w-56 py-0.5 text-[10px] leading-tight">
+            <div className="flex items-center gap-1.5">
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: nodeColor(node) }} />
+              <span className="font-black text-slate-950">{node.title}</span>
+            </div>
+            <div className="mt-1 font-bold text-slate-500">
+              {nodeTypeLabel(node)} · D{node.day} · {node.time || '时间待定'}
+            </div>
+            {(node.city || node.address) && (
+              <div className="mt-0.5 font-semibold text-slate-600">{node.city || node.address}</div>
+            )}
+            {node.description && <div className="mt-1 line-clamp-2 text-slate-500">{node.description}</div>}
+          </div>
+        </Tooltip>
+      )}
       <Popup autoPan={false} closeButton={false} closeOnClick={false} className="itinerary-detail-popup">
         <div className="max-w-[220px] text-sm font-sans">
           {node.image_url && (
@@ -614,16 +632,29 @@ const nodeInfoHtml = (node: ItineraryNode) => {
   const image = imagesOf(node)[0];
   return `
     <div style="max-width:230px;font-family:Inter,system-ui,sans-serif">
-      ${image ? `<img src="${image}" alt="" style="width:100%;height:92px;object-fit:cover;border-radius:12px;margin-bottom:8px" />` : ''}
-      <div style="font-weight:900;color:#0f172a;font-size:13px;line-height:1.25">${node.title}</div>
+      ${image ? `<img src="${escapeHtml(image)}" alt="" style="width:100%;height:92px;object-fit:cover;border-radius:12px;margin-bottom:8px" />` : ''}
+      <div style="font-weight:900;color:#0f172a;font-size:13px;line-height:1.25">${escapeHtml(node.title)}</div>
       <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
         <span style="border-radius:999px;background:${nodeColor(node)};color:white;padding:2px 8px;font-size:10px;font-weight:800">${nodeTypeLabel(node)}</span>
-        <span style="font-size:10px;color:#64748b;font-weight:700">D${node.day} · ${node.time}</span>
+        <span style="font-size:10px;color:#64748b;font-weight:700">D${node.day} · ${escapeHtml(node.time)}</span>
       </div>
-      ${node.description ? `<div style="margin-top:6px;color:#475569;font-size:11px;line-height:1.45">${node.description}</div>` : ''}
+      ${node.city || node.address ? `<div style="margin-top:6px;color:#334155;font-size:11px;font-weight:700;line-height:1.35">${escapeHtml(node.city || node.address)}</div>` : ''}
+      ${node.description ? `<div style="margin-top:6px;color:#475569;font-size:11px;line-height:1.45">${escapeHtml(node.description)}</div>` : ''}
     </div>
   `;
 };
+
+const nodeHoverLabelHtml = (node: ItineraryNode) => `
+  <div style="min-width:160px;max-width:220px;font-family:Inter,system-ui,sans-serif">
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="width:9px;height:9px;border-radius:999px;background:${nodeColor(node)};box-shadow:0 0 0 3px rgba(255,255,255,.92)"></span>
+      <span style="font-size:12px;font-weight:900;color:#0f172a;line-height:1.25">${escapeHtml(node.title)}</span>
+    </div>
+    <div style="margin-top:5px;font-size:10px;font-weight:800;color:#64748b">${escapeHtml(nodeTypeLabel(node))} · D${node.day} · ${escapeHtml(node.time || '时间待定')}</div>
+    ${node.city || node.address ? `<div style="margin-top:4px;font-size:10px;font-weight:700;color:#475569;line-height:1.35">${escapeHtml(node.city || node.address)}</div>` : ''}
+    ${node.description ? `<div style="margin-top:5px;font-size:10px;color:#64748b;line-height:1.35">${escapeHtml(node.description)}</div>` : ''}
+  </div>
+`;
 
 const lodgingStayText = (stays: Stay[]) =>
   stays
@@ -961,11 +992,22 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
                 scale: activeNodeId === node.id ? 12 : 10,
               },
             });
-            marker.addListener('click', () => {
-              setActiveNodeId(node.id);
+            const openNodeInfo = () => {
               infoRef.current.setContent(nodeInfoHtml(node));
               infoRef.current.open(mapRef.current, marker);
+            };
+            marker.addListener('click', () => {
+              clearRouteHover();
+              setActiveNodeId(node.id);
+              openNodeInfo();
             });
+            marker.addListener('mouseover', () => {
+              clearRouteHover();
+              hoverInfoRef.current.setContent(nodeHoverLabelHtml(node));
+              hoverInfoRef.current.open(mapRef.current, marker);
+            });
+            marker.addListener('mouseout', () => hoverInfoRef.current?.close());
+            if (activeNodeId === node.id) openNodeInfo();
             overlaysRef.current.push(marker);
           });
         }
@@ -1016,6 +1058,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const overlaysRef = useRef<any[]>([]);
+  const infoRef = useRef<any>(null);
   const hoverInfoRef = useRef<any>(null);
   const hoverOverlaysRef = useRef<any[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -1039,6 +1082,12 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
         }
         if (!hoverInfoRef.current) {
           hoverInfoRef.current = new AMap.InfoWindow({
+            isCustom: false,
+            offset: new AMap.Pixel(0, -18),
+          });
+        }
+        if (!infoRef.current) {
+          infoRef.current = new AMap.InfoWindow({
             isCustom: false,
             offset: new AMap.Pixel(0, -18),
           });
@@ -1265,8 +1314,9 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               offset: new AMap.Pixel(-16, -16),
             });
             marker.on('click', () => {
-              hoverInfoRef.current.setContent(lodgingInfoHtml(lodging, stays));
-              hoverInfoRef.current.open(mapRef.current, position);
+              clearRouteHover();
+              infoRef.current.setContent(lodgingInfoHtml(lodging, stays));
+              infoRef.current.open(mapRef.current, position);
             });
             overlaysRef.current.push(marker);
           });
@@ -1280,7 +1330,22 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               content: `<div style="width:${activeNodeId === node.id ? 32 : 26}px;height:${activeNodeId === node.id ? 32 : 26}px;border-radius:999px;background:${nodeColor(node)};border:3px solid white;box-shadow:0 10px 24px rgba(15,23,42,.25)"></div>`,
               offset: new AMap.Pixel(-13, -13),
             });
-            marker.on('click', () => setActiveNodeId(node.id));
+            const openNodeInfo = () => {
+              infoRef.current.setContent(nodeInfoHtml(node));
+              infoRef.current.open(mapRef.current, position);
+            };
+            marker.on('click', () => {
+              clearRouteHover();
+              setActiveNodeId(node.id);
+              openNodeInfo();
+            });
+            marker.on('mouseover', () => {
+              clearRouteHover();
+              hoverInfoRef.current.setContent(nodeHoverLabelHtml(node));
+              hoverInfoRef.current.open(mapRef.current, position);
+            });
+            marker.on('mouseout', () => hoverInfoRef.current?.close());
+            if (activeNodeId === node.id) openNodeInfo();
             overlaysRef.current.push(marker);
           });
         }
