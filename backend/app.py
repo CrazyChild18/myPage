@@ -41,6 +41,7 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 GEOCODE_CACHE_TTL = 24 * 60 * 60
 REVERSE_CACHE_TTL = 7 * 24 * 60 * 60
 ROUTE_CACHE_TTL = 29 * 24 * 60 * 60
+MAX_LODGING_CONNECTION_METERS = 800_000
 GEOCODE_CACHE = {}
 EDGE_TRANSPORT_TYPES = {"walk", "car", "taxi", "transit", "bus", "subway", "train", "high_speed_rail", "ferry", "other"}
 EDGE_ROUTE_PREFERENCES = {"recommended", "fastest", "shortest", "avoid_tolls", "avoid_highways"}
@@ -1598,7 +1599,8 @@ def refresh_lodging_route_segments(db, slug, provider):
     generated_ids = []
 
     def add_lodging_connection(kind, day, stay, node, source_point, target_point):
-        if haversine_meters(source_point[0], source_point[1], target_point[0], target_point[1]) < 80:
+        distance_meters = haversine_meters(source_point[0], source_point[1], target_point[0], target_point[1])
+        if distance_meters < 80 or distance_meters > MAX_LODGING_CONNECTION_METERS:
             return
         link_id = lodging_connection_id(kind, day, stay["stay_id"], stay["lodging_id"], node["id"])
         transport_type = default_connection_transport_type(source_point, target_point)
