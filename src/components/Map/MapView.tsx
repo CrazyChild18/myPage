@@ -275,8 +275,11 @@ const ROUTE_HALO_COLOR = '#ffffff';
 const EDGE_ROUTE_COLOR = '#e11d48';
 const EDGE_ROUTE_HOVER_COLOR = '#be123c';
 const FALLBACK_ROUTE_COLOR = '#f59e0b';
+const ROUTE_FOCUS_DIM_OPACITY = 0.18;
+const ROUTE_BASE_Z_INDEX = 20;
+const ROUTE_HOVER_Z_INDEX = 120;
 
-const transportLineStyle = (node: ItineraryNode, selected: boolean): L.PolylineOptions => {
+const transportLineStyle = (node: ItineraryNode, selected: boolean, muted = false): L.PolylineOptions => {
   const air = isAirTransport(node);
   const railway = node.transport_mode === 'train' || node.transport_mode === 'high_speed_rail' || node.transport_mode === 'subway';
   const ground = node.transport_mode === 'car' || node.transport_mode === 'bus';
@@ -284,7 +287,7 @@ const transportLineStyle = (node: ItineraryNode, selected: boolean): L.PolylineO
   return {
     color,
     weight: selected ? 5.2 : air ? 3.4 : 4,
-    opacity: selected ? 1 : air ? 0.9 : 0.88,
+    opacity: muted ? ROUTE_FOCUS_DIM_OPACITY : selected ? 1 : air ? 0.9 : 0.88,
     dashArray: selected ? undefined : air ? '12, 10' : undefined,
     lineCap: 'round',
     lineJoin: 'round',
@@ -315,13 +318,13 @@ const edgeColorByType = (type?: string) => {
   }
 };
 
-const edgeLineStyle = (edge: ItineraryEdge, segment: RouteSegment | undefined, hovered: boolean, selected = false): L.PolylineOptions => {
+const edgeLineStyle = (edge: ItineraryEdge, segment: RouteSegment | undefined, hovered: boolean, selected = false, muted = false): L.PolylineOptions => {
   const failed = segment?.status === 'failed';
   const baseColor = edgeColorByType(edge.transportType);
   return {
     color: failed ? FALLBACK_ROUTE_COLOR : hovered || selected ? EDGE_ROUTE_HOVER_COLOR : baseColor,
     weight: selected ? 5.6 : hovered ? 5 : 3.8,
-    opacity: failed ? 0.82 : 0.94,
+    opacity: muted ? ROUTE_FOCUS_DIM_OPACITY : failed ? 0.82 : 0.94,
     dashArray: failed ? '8, 8' : undefined,
     lineCap: 'round',
     lineJoin: 'round',
@@ -439,6 +442,7 @@ const TransportRouteLayer: React.FC<TransportRouteLayerProps> = ({
   onSelect,
   renderTransportIcon,
 }) => {
+  const haloRef = useRef<L.Polyline>(null);
   const lineRef = useRef<L.Polyline>(null);
   const [hovered, setHovered] = useState(false);
   const path = routePathForTransport(route, routeSegment);
@@ -450,11 +454,18 @@ const TransportRouteLayer: React.FC<TransportRouteLayerProps> = ({
     if (selected) lineRef.current?.openPopup();
   }, [selected]);
 
+  useEffect(() => {
+    if (!selected && !hovered) return;
+    haloRef.current?.bringToFront();
+    lineRef.current?.bringToFront();
+  }, [hovered, selected]);
+
   if (path.length < 2 || !midpoint) return null;
 
   return (
     <React.Fragment>
       <Polyline
+        ref={haloRef}
         positions={path}
         pathOptions={routeHaloStyle(Number(lineStyle.weight || 3) + 4)}
         eventHandlers={{ click: onSelect, mouseover: () => setHovered(true), mouseout: () => setHovered(false) }}
@@ -679,6 +690,48 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
           bounds.extend({ lat, lng });
           hasBounds = true;
         };
+        const routeVisuals: Array<{
+          id: string;
+          line: any;
+          halo: any;
+          color: string;
+          weight: number;
+          opacity: number;
+          haloWeight: number;
+          lineZIndex: number;
+          haloZIndex: number;
+        }> = [];
+        const resetRouteVisualFocus = () => {
+          routeVisuals.forEach((route) => {
+            route.halo.setOptions({
+              strokeOpacity: 0.9,
+              strokeWeight: route.haloWeight,
+              zIndex: route.haloZIndex,
+            });
+            route.line.setOptions({
+              strokeColor: route.color,
+              strokeOpacity: route.opacity,
+              strokeWeight: route.weight,
+              zIndex: route.lineZIndex,
+            });
+          });
+        };
+        const focusRouteVisual = (id: string, color: string, weight: number) => {
+          routeVisuals.forEach((route) => {
+            const focused = route.id === id;
+            route.halo.setOptions({
+              strokeOpacity: focused ? 1 : ROUTE_FOCUS_DIM_OPACITY,
+              strokeWeight: focused ? weight + 7 : route.haloWeight,
+              zIndex: focused ? ROUTE_HOVER_Z_INDEX - 1 : route.haloZIndex,
+            });
+            route.line.setOptions({
+              strokeColor: focused ? color : route.color,
+              strokeOpacity: focused ? 1 : ROUTE_FOCUS_DIM_OPACITY,
+              strokeWeight: focused ? weight : route.weight,
+              zIndex: focused ? ROUTE_HOVER_Z_INDEX : route.lineZIndex,
+            });
+          });
+        };
 
         if (mode === 'home') {
           trips.forEach((trip) => {
@@ -713,7 +766,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeColor: ROUTE_HALO_COLOR,
               strokeOpacity: 0.9,
               strokeWeight: Number(style.weight || 3) + 5,
-              zIndex: 10,
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 10,
             });
             const line = new maps.Polyline({
               map: mapRef.current,
@@ -721,7 +774,19 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeColor: String(style.color || '#0ea5e9'),
               strokeOpacity: Number(style.opacity || 0.8),
               strokeWeight: Number(style.weight || 3),
-              zIndex: 20,
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX,
+            });
+            const routeVisualId = `transport:${route.id}`;
+            routeVisuals.push({
+              id: routeVisualId,
+              line,
+              halo,
+              color: String(style.color || '#0ea5e9'),
+              weight: Number(style.weight || 3),
+              opacity: Number(style.opacity || 0.8),
+              haloWeight: Number(style.weight || 3) + 5,
+              lineZIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX,
+              haloZIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 10,
             });
             line.addListener('click', () => {
               setActiveNodeId(route.id);
@@ -731,6 +796,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             });
             line.addListener('mouseover', () => {
               clearRouteHover();
+              focusRouteVisual(routeVisualId, String(hoverStyle.color || style.color || '#db2777'), Number(hoverStyle.weight || 5));
               line.setOptions({
                 strokeWeight: Number(hoverStyle.weight || 5),
                 strokeOpacity: 1,
@@ -753,10 +819,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               hoverInfoRef.current.open(mapRef.current);
             });
             line.addListener('mouseout', () => {
-              line.setOptions({
-                strokeWeight: Number(style.weight || 3),
-                strokeOpacity: Number(style.opacity || 0.8),
-              });
+              resetRouteVisualFocus();
               clearRouteHover();
             });
             overlaysRef.current.push(halo);
@@ -779,7 +842,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeColor: ROUTE_HALO_COLOR,
               strokeOpacity: 0.9,
               strokeWeight: Number(style.weight || 3) + 5,
-              zIndex: 8,
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 8,
             });
             const line = new maps.Polyline({
               map: mapRef.current,
@@ -787,11 +850,24 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeColor: String(style.color || EDGE_ROUTE_COLOR),
               strokeOpacity: Number(style.opacity || 0.9),
               strokeWeight: Number(style.weight || 3),
-              zIndex: selected ? 24 : 18,
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
+            });
+            const routeVisualId = `edge:${edge.id}`;
+            routeVisuals.push({
+              id: routeVisualId,
+              line,
+              halo,
+              color: String(style.color || EDGE_ROUTE_COLOR),
+              weight: Number(style.weight || 3),
+              opacity: Number(style.opacity || 0.9),
+              haloWeight: Number(style.weight || 3) + 5,
+              lineZIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
+              haloZIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 8,
             });
             line.addListener('click', () => setActiveEdgeId(edge.id));
             line.addListener('mouseover', () => {
               clearRouteHover();
+              focusRouteVisual(routeVisualId, String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR), Number(hoverStyle.weight || 5));
               line.setOptions({
                 strokeColor: String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR),
                 strokeWeight: Number(hoverStyle.weight || 5),
@@ -815,11 +891,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               hoverInfoRef.current.open(mapRef.current);
             });
             line.addListener('mouseout', () => {
-              line.setOptions({
-                strokeColor: String(style.color || EDGE_ROUTE_COLOR),
-                strokeWeight: Number(style.weight || 3),
-                strokeOpacity: Number(style.opacity || 0.9),
-              });
+              resetRouteVisualFocus();
               clearRouteHover();
             });
             overlaysRef.current.push(halo);
@@ -940,6 +1012,48 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
           boundsPoints.push([lng, lat]);
           return [lng, lat] as [number, number];
         };
+        const routeVisuals: Array<{
+          id: string;
+          line: any;
+          halo: any;
+          color: string;
+          weight: number;
+          opacity: number;
+          haloWeight: number;
+          lineZIndex: number;
+          haloZIndex: number;
+        }> = [];
+        const resetRouteVisualFocus = () => {
+          routeVisuals.forEach((route) => {
+            route.halo.setOptions({
+              strokeOpacity: 0.92,
+              strokeWeight: route.haloWeight,
+              zIndex: route.haloZIndex,
+            });
+            route.line.setOptions({
+              strokeColor: route.color,
+              strokeOpacity: route.opacity,
+              strokeWeight: route.weight,
+              zIndex: route.lineZIndex,
+            });
+          });
+        };
+        const focusRouteVisual = (id: string, color: string, weight: number) => {
+          routeVisuals.forEach((route) => {
+            const focused = route.id === id;
+            route.halo.setOptions({
+              strokeOpacity: focused ? 1 : ROUTE_FOCUS_DIM_OPACITY,
+              strokeWeight: focused ? weight + 7 : route.haloWeight,
+              zIndex: focused ? ROUTE_HOVER_Z_INDEX - 1 : route.haloZIndex,
+            });
+            route.line.setOptions({
+              strokeColor: focused ? color : route.color,
+              strokeOpacity: focused ? 1 : ROUTE_FOCUS_DIM_OPACITY,
+              strokeWeight: focused ? weight : route.weight,
+              zIndex: focused ? ROUTE_HOVER_Z_INDEX : route.lineZIndex,
+            });
+          });
+        };
 
         if (mode === 'home') {
           trips.forEach((trip) => {
@@ -976,7 +1090,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeOpacity: 0.92,
               strokeWeight: Number(style.weight || 3) + 5,
               strokeStyle: 'solid',
-              zIndex: 10,
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 10,
             });
             const line = new AMap.Polyline({
               map: mapRef.current,
@@ -985,11 +1099,24 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeOpacity: Number(style.opacity || 0.8),
               strokeWeight: Number(style.weight || 3),
               strokeStyle: !selected && isAirTransport(route) ? 'dashed' : 'solid',
-              zIndex: 20,
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX,
+            });
+            const routeVisualId = `transport:${route.id}`;
+            routeVisuals.push({
+              id: routeVisualId,
+              line,
+              halo,
+              color: String(style.color || '#0ea5e9'),
+              weight: Number(style.weight || 3),
+              opacity: Number(style.opacity || 0.8),
+              haloWeight: Number(style.weight || 3) + 5,
+              lineZIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX,
+              haloZIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 10,
             });
             line.on('click', () => setActiveNodeId(route.id));
             line.on('mouseover', () => {
               clearRouteHover();
+              focusRouteVisual(routeVisualId, String(hoverStyle.color || style.color || '#db2777'), Number(hoverStyle.weight || 5));
               line.setOptions({
                 strokeWeight: Number(hoverStyle.weight || 5),
                 strokeOpacity: 1,
@@ -1005,10 +1132,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               hoverInfoRef.current.open(mapRef.current, midpoint);
             });
             line.on('mouseout', () => {
-              line.setOptions({
-                strokeWeight: Number(style.weight || 3),
-                strokeOpacity: Number(style.opacity || 0.8),
-              });
+              resetRouteVisualFocus();
               clearRouteHover();
             });
             overlaysRef.current.push(halo);
@@ -1033,7 +1157,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeOpacity: 0.92,
               strokeWeight: Number(style.weight || 3) + 5,
               strokeStyle: 'solid',
-              zIndex: 8,
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 8,
             });
             const line = new AMap.Polyline({
               map: mapRef.current,
@@ -1042,11 +1166,24 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeOpacity: Number(style.opacity || 0.9),
               strokeWeight: Number(style.weight || 3),
               strokeStyle: routeSegment?.status === 'failed' ? 'dashed' : 'solid',
-              zIndex: selected ? 24 : 18,
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
+            });
+            const routeVisualId = `edge:${edge.id}`;
+            routeVisuals.push({
+              id: routeVisualId,
+              line,
+              halo,
+              color: String(style.color || EDGE_ROUTE_COLOR),
+              weight: Number(style.weight || 3),
+              opacity: Number(style.opacity || 0.9),
+              haloWeight: Number(style.weight || 3) + 5,
+              lineZIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
+              haloZIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 8,
             });
             line.on('click', () => setActiveEdgeId(edge.id));
             line.on('mouseover', () => {
               clearRouteHover();
+              focusRouteVisual(routeVisualId, String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR), Number(hoverStyle.weight || 5));
               line.setOptions({
                 strokeColor: String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR),
                 strokeWeight: Number(hoverStyle.weight || 5),
@@ -1063,11 +1200,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               hoverInfoRef.current.open(mapRef.current, midpoint);
             });
             line.on('mouseout', () => {
-              line.setOptions({
-                strokeColor: String(style.color || EDGE_ROUTE_COLOR),
-                strokeWeight: Number(style.weight || 3),
-                strokeOpacity: Number(style.opacity || 0.9),
-              });
+              resetRouteVisualFocus();
               clearRouteHover();
             });
             overlaysRef.current.push(halo);
@@ -1148,6 +1281,10 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     if (!source || !target) return false;
     return activeDay === 'all' || source.day === activeDay || target.day === activeDay;
   });
+  const focusedEdgeId = hoveredEdgeId || activeEdgeId;
+  const renderEdges = focusedEdgeId
+    ? [...visibleEdges].sort((left, right) => Number(left.id === focusedEdgeId) - Number(right.id === focusedEdgeId))
+    : visibleEdges;
 
   const fitPoints: [number, number][] = [
     ...visibleNodes.map((node) => [node.lat, node.lng] as [number, number]),
@@ -1199,7 +1336,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     selectedHomeSlug,
     visibleNodes,
     visibleTransportRoutes,
-    visibleEdges,
+    visibleEdges: renderEdges,
     routeSegments,
     nodes,
     activeNodeId,
@@ -1304,13 +1441,14 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
         })}
 
         {/* Draw edges (connecting networks) */}
-        {mode === 'trip' && visibleEdges.map((edge) => {
+        {mode === 'trip' && renderEdges.map((edge) => {
           const data = getEdgeCoordinatesAndMeta(edge);
           if (!data) return null;
 
           const isHovered = hoveredEdgeId === edge.id;
           const selected = activeEdgeId === edge.id;
-          const edgeStyle = edgeLineStyle(edge, data.routeSegment, isHovered, selected);
+          const muted = Boolean(focusedEdgeId) && !isHovered && !selected;
+          const edgeStyle = edgeLineStyle(edge, data.routeSegment, isHovered, selected, muted);
           const label = edgeRouteLabel(edge, data.routeSegment);
           
           return (
