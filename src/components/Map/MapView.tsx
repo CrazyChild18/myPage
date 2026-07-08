@@ -284,10 +284,21 @@ const routePathForEdge = (edge: ItineraryEdge, nodes: ItineraryNode[], segment?:
   return [nodeAnchorPoint(srcNode, edge.sourceAnchor), nodeAnchorPoint(tarNode, edge.targetAnchor)];
 };
 
+const routePathForSegment = (segment: RouteSegment, includeProviderGeometry = false): [number, number][] => {
+  const geometry = cleanGeometry(segment, includeProviderGeometry);
+  if (geometry.length >= 2) return geometry;
+  return [
+    [segment.origin_lat, segment.origin_lng],
+    [segment.destination_lat, segment.destination_lng],
+  ];
+};
+
 const pathMidpoint = (path: [number, number][]): [number, number] => path[Math.floor(path.length / 2)] || [0, 0];
 const ROUTE_HALO_COLOR = '#ffffff';
 const EDGE_ROUTE_COLOR = '#e11d48';
 const EDGE_ROUTE_HOVER_COLOR = '#be123c';
+const LODGING_ROUTE_COLOR = '#059669';
+const LODGING_ROUTE_HOVER_COLOR = '#047857';
 const FALLBACK_ROUTE_COLOR = '#f59e0b';
 const ROUTE_FOCUS_DIM_OPACITY = 0.18;
 const ROUTE_BASE_Z_INDEX = 20;
@@ -391,6 +402,33 @@ const edgeRouteLabel = (edge: ItineraryEdge, segment?: RouteSegment) => ({
   subtitle: edge.linkKind === 'transport_leg' ? '交通区间路线' : '事件接续路线',
   metric: [segment?.distanceText || edge.distance, segment?.durationText || edge.duration].filter(Boolean).join(' · '),
   warning: segment?.status === 'failed' ? '真实路线暂不可用，已回退直线' : '',
+});
+
+const lodgingConnectionKind = (segment: RouteSegment) =>
+  segment.linkId.startsWith('lodging-start:') ? 'start' : 'end';
+
+const lodgingConnectionDay = (segment: RouteSegment) => {
+  const match = segment.linkId.match(/:D(\d+):/);
+  return match ? Number(match[1]) : null;
+};
+
+const lodgingConnectionLabel = (segment: RouteSegment) => {
+  const start = lodgingConnectionKind(segment) === 'start';
+  return {
+    title: start ? '住宿出发' : '返回住宿',
+    subtitle: start ? '住宿 → 当天第一站' : '当天最后一站 → 夜宿住宿',
+    metric: [segment.distanceText, segment.durationText].filter(Boolean).join(' · '),
+    warning: segment.status === 'failed' ? '真实路线暂不可用，已回退直线' : '',
+  };
+};
+
+const lodgingConnectionLineStyle = (segment: RouteSegment, hovered = false, selected = false, muted = false): L.PolylineOptions => ({
+  color: segment.status === 'failed' ? FALLBACK_ROUTE_COLOR : hovered || selected ? LODGING_ROUTE_HOVER_COLOR : LODGING_ROUTE_COLOR,
+  weight: selected ? 5.3 : hovered ? 4.8 : 3.5,
+  opacity: muted ? ROUTE_FOCUS_DIM_OPACITY : segment.status === 'failed' ? 0.82 : 0.92,
+  dashArray: segment.status === 'failed' ? '8, 8' : '3, 9',
+  lineCap: 'round',
+  lineJoin: 'round',
 });
 
 const routeLabelHtml = ({ title, subtitle, metric, warning }: { title: string; subtitle: string; metric?: string; warning?: string }) => `
@@ -599,6 +637,7 @@ type ProviderMapCanvasProps = {
   visibleNodes: ItineraryNode[];
   visibleTransportRoutes: ItineraryNode[];
   visibleLodgings: VisibleLodgingMarker[];
+  visibleLodgingRouteSegments: RouteSegment[];
   visibleEdges: ItineraryEdge[];
   routeSegments: RouteSegment[];
   nodes: ItineraryNode[];
@@ -693,6 +732,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   visibleNodes,
   visibleTransportRoutes,
   visibleLodgings,
+  visibleLodgingRouteSegments,
   visibleEdges,
   routeSegments,
   nodes,
@@ -954,6 +994,78 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             overlaysRef.current.push(line);
           });
 
+          visibleLodgingRouteSegments.forEach((segment) => {
+            const path = routePathForSegment(segment).map(googleLatLng);
+            if (path.length < 2) return;
+            path.forEach((point) => remember(point.lat, point.lng));
+            const selected = activeEdgeId === `lodging:${segment.id}`;
+            const muted = Boolean(activeEdgeId) && !selected;
+            const style = lodgingConnectionLineStyle(segment, false, selected, muted);
+            const hoverStyle = lodgingConnectionLineStyle(segment, true, selected);
+            const midpoint = path[Math.floor(path.length / 2)];
+            const label = lodgingConnectionLabel(segment);
+            const halo = new maps.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: ROUTE_HALO_COLOR,
+              strokeOpacity: 0.9,
+              strokeWeight: Number(style.weight || 3) + 5,
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 7,
+            });
+            const line = new maps.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: String(style.color || LODGING_ROUTE_COLOR),
+              strokeOpacity: Number(style.opacity || 0.9),
+              strokeWeight: Number(style.weight || 3),
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
+            });
+            const routeVisualId = `lodging:${segment.id}`;
+            routeVisuals.push({
+              id: routeVisualId,
+              line,
+              halo,
+              color: String(style.color || LODGING_ROUTE_COLOR),
+              weight: Number(style.weight || 3),
+              opacity: Number(style.opacity || 0.9),
+              haloWeight: Number(style.weight || 3) + 5,
+              lineZIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
+              haloZIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 7,
+            });
+            line.addListener('click', () => setActiveEdgeId(routeVisualId));
+            line.addListener('mouseover', () => {
+              clearRouteHover();
+              focusRouteVisual(routeVisualId, String(hoverStyle.color || LODGING_ROUTE_HOVER_COLOR), Number(hoverStyle.weight || 5));
+              line.setOptions({
+                strokeColor: String(hoverStyle.color || LODGING_ROUTE_HOVER_COLOR),
+                strokeWeight: Number(hoverStyle.weight || 5),
+                strokeOpacity: 1,
+              });
+              const marker = new maps.Marker({
+                map: mapRef.current,
+                position: midpoint,
+                icon: {
+                  path: maps.SymbolPath.CIRCLE,
+                  fillColor: LODGING_ROUTE_HOVER_COLOR,
+                  fillOpacity: 1,
+                  strokeColor: ROUTE_HALO_COLOR,
+                  strokeWeight: 3,
+                  scale: 7,
+                },
+              });
+              hoverOverlaysRef.current.push(marker);
+              hoverInfoRef.current.setContent(routeLabelHtml(label));
+              hoverInfoRef.current.setPosition(midpoint);
+              hoverInfoRef.current.open(mapRef.current);
+            });
+            line.addListener('mouseout', () => {
+              resetRouteVisualFocus();
+              clearRouteHover();
+            });
+            overlaysRef.current.push(halo);
+            overlaysRef.current.push(line);
+          });
+
           visibleLodgings.forEach(({ lodging, stays }) => {
             remember(lodging.lat, lodging.lng);
             const marker = new maps.Marker({
@@ -1020,7 +1132,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleLodgings, visibleNodes, visibleTransportRoutes]);
+  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -1045,6 +1157,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   visibleNodes,
   visibleTransportRoutes,
   visibleLodgings,
+  visibleLodgingRouteSegments,
   visibleEdges,
   routeSegments,
   nodes,
@@ -1304,6 +1417,74 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
             overlaysRef.current.push(halo);
             overlaysRef.current.push(line);
           });
+          visibleLodgingRouteSegments.forEach((segment) => {
+            const pathPoints = routePathForSegment(segment, true);
+            const path = segment.coordSystem === 'gcj02'
+              ? pathPoints.map(([lat, lng]) => rememberProviderPoint(lat, lng))
+              : pathPoints.map(([lat, lng]) => remember(lat, lng));
+            if (path.length < 2) return;
+            const routeVisualId = `lodging:${segment.id}`;
+            const selected = activeEdgeId === routeVisualId;
+            const muted = Boolean(activeEdgeId) && !selected;
+            const style = lodgingConnectionLineStyle(segment, false, selected, muted);
+            const hoverStyle = lodgingConnectionLineStyle(segment, true, selected);
+            const midpoint = path[Math.floor(path.length / 2)];
+            const label = lodgingConnectionLabel(segment);
+            const halo = new AMap.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: ROUTE_HALO_COLOR,
+              strokeOpacity: 0.92,
+              strokeWeight: Number(style.weight || 3) + 5,
+              strokeStyle: 'solid',
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 7,
+            });
+            const line = new AMap.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: String(style.color || LODGING_ROUTE_COLOR),
+              strokeOpacity: Number(style.opacity || 0.9),
+              strokeWeight: Number(style.weight || 3),
+              strokeStyle: segment.status === 'failed' ? 'dashed' : 'dashed',
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
+            });
+            routeVisuals.push({
+              id: routeVisualId,
+              line,
+              halo,
+              color: String(style.color || LODGING_ROUTE_COLOR),
+              weight: Number(style.weight || 3),
+              opacity: Number(style.opacity || 0.9),
+              haloWeight: Number(style.weight || 3) + 5,
+              lineZIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
+              haloZIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 7,
+            });
+            line.on('click', () => setActiveEdgeId(routeVisualId));
+            line.on('mouseover', () => {
+              clearRouteHover();
+              focusRouteVisual(routeVisualId, String(hoverStyle.color || LODGING_ROUTE_HOVER_COLOR), Number(hoverStyle.weight || 5));
+              line.setOptions({
+                strokeColor: String(hoverStyle.color || LODGING_ROUTE_HOVER_COLOR),
+                strokeWeight: Number(hoverStyle.weight || 5),
+                strokeOpacity: 1,
+              });
+              const marker = new AMap.Marker({
+                map: mapRef.current,
+                position: midpoint,
+                content: `<div style="width:16px;height:16px;border-radius:999px;background:${LODGING_ROUTE_HOVER_COLOR};border:3px solid white;box-shadow:0 8px 18px rgba(15,23,42,.28)"></div>`,
+                offset: new AMap.Pixel(-8, -8),
+              });
+              hoverOverlaysRef.current.push(marker);
+              hoverInfoRef.current.setContent(routeLabelHtml(label));
+              hoverInfoRef.current.open(mapRef.current, midpoint);
+            });
+            line.on('mouseout', () => {
+              resetRouteVisualFocus();
+              clearRouteHover();
+            });
+            overlaysRef.current.push(halo);
+            overlaysRef.current.push(line);
+          });
           visibleLodgings.forEach(({ lodging, stays }) => {
             const position = remember(lodging.lat, lodging.lng);
             const marker = new AMap.Marker({
@@ -1356,7 +1537,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleLodgings, visibleNodes, visibleTransportRoutes]);
+  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -1418,6 +1599,10 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
       else lookup.set(lodging.id, { lodging, stays: [stay] });
       return lookup;
     }, new Map()).values());
+  const visibleLodgingRouteSegments = routeSegments.filter((segment) =>
+    segment.linkType === 'lodging_connection' &&
+    (activeDay === 'all' || lodgingConnectionDay(segment) === activeDay)
+  );
 
   // Filter route links where both end-events exist and either side belongs to the active day.
   const visibleEdges = edges.filter(edge => {
@@ -1441,6 +1626,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     ...visibleEdges.flatMap((edge) =>
       routePathForEdge(edge, nodes, routeSegmentLookup.get(routeSegmentKey('edge', edge.id)))
     ),
+    ...visibleLodgingRouteSegments.flatMap((segment) => routePathForSegment(segment)),
   ];
 
   // Calculate midpoints to draw transport-specific popup helper
@@ -1484,6 +1670,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     visibleNodes,
     visibleTransportRoutes,
     visibleLodgings,
+    visibleLodgingRouteSegments,
     visibleEdges: renderEdges,
     routeSegments,
     nodes,
@@ -1640,6 +1827,56 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
                       <div className="font-black text-slate-950">{label.title}</div>
                       <div className="mt-0.5 font-bold text-slate-500">{label.subtitle}</div>
                       {label.metric && <div className="mt-1 font-black text-rose-600">{label.metric}</div>}
+                      {label.warning && <div className="mt-0.5 font-bold text-amber-600">{label.warning}</div>}
+                    </div>
+                  </Tooltip>
+                </CircleMarker>
+              )}
+            </React.Fragment>
+          );
+        })}
+
+        {mode === 'trip' && visibleLodgingRouteSegments.map((segment) => {
+          const positions = routePathForSegment(segment);
+          if (positions.length < 2) return null;
+          const routeStateId = `lodging:${segment.id}`;
+          const isHovered = hoveredEdgeId === routeStateId;
+          const selected = activeEdgeId === routeStateId;
+          const muted = Boolean(focusedEdgeId) && !isHovered && !selected;
+          const style = lodgingConnectionLineStyle(segment, isHovered, selected, muted);
+          const label = lodgingConnectionLabel(segment);
+
+          return (
+            <React.Fragment key={segment.id}>
+              <Polyline
+                positions={positions}
+                pathOptions={{ color: 'transparent', weight: 15, lineCap: 'round' }}
+                eventHandlers={{
+                  click: () => setActiveEdgeId(routeStateId),
+                  mouseover: () => setHoveredEdgeId(routeStateId),
+                  mouseout: () => setHoveredEdgeId(null),
+                }}
+              />
+              <Polyline
+                positions={positions}
+                pathOptions={routeHaloStyle(Number(style.weight || 3) + 4, 0.86)}
+              />
+              <Polyline
+                positions={positions}
+                pathOptions={style}
+                eventHandlers={{
+                  click: () => setActiveEdgeId(routeStateId),
+                  mouseover: () => setHoveredEdgeId(routeStateId),
+                  mouseout: () => setHoveredEdgeId(null),
+                }}
+              />
+              {(isHovered || selected) && (
+                <CircleMarker center={pathMidpoint(positions)} radius={7} pathOptions={routeHoverMarkerStyle(String(style.color || LODGING_ROUTE_HOVER_COLOR))}>
+                  <Tooltip direction="top" offset={[0, -10]} opacity={0.98} permanent>
+                    <div className="min-w-32 py-0.5 text-[10px] leading-tight">
+                      <div className="font-black text-slate-950">{label.title}</div>
+                      <div className="mt-0.5 font-bold text-slate-500">{label.subtitle}</div>
+                      {label.metric && <div className="mt-1 font-black text-emerald-700">{label.metric}</div>}
                       {label.warning && <div className="mt-0.5 font-bold text-amber-600">{label.warning}</div>}
                     </div>
                   </Tooltip>

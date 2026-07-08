@@ -1255,6 +1255,10 @@ def default_connection_transport_type(source_point, target_point):
     return "walk" if distance < 2000 else "car"
 
 
+def lodging_connection_id(kind, day, stay_id, lodging_id, node_id):
+    return f"lodging-{kind}:D{int(day)}:{stay_id}:{lodging_id}:{node_id}"
+
+
 def route_fingerprint(provider, travel_mode, origin_lat, origin_lng, destination_lat, destination_lng):
     return json.dumps(
         {
@@ -1534,6 +1538,8 @@ def refresh_route_segments(db, slug):
             node["duration"] or "",
         )
 
+    refresh_lodging_route_segments(db, slug, provider)
+
     db.execute(
         """DELETE FROM route_segments
         WHERE trip_slug = ? AND link_type = 'edge'
@@ -1552,6 +1558,110 @@ def refresh_route_segments(db, slug):
         AND link_id NOT IN (SELECT id FROM nodes WHERE trip_slug = ? AND type = 'transport')""",
         (slug, slug),
     )
+
+
+def refresh_lodging_route_segments(db, slug, provider):
+    nodes = list(db.execute(
+        """SELECT id, title, type, day, date, time, end_day, end_date, end_time,
+        lat, lng, transport_mode, departure_lat, departure_lng, arrival_lat, arrival_lng,
+        arrival_time, arrival_date
+        FROM nodes
+        WHERE trip_slug = ?
+        AND status != 'unscheduled' AND day > 0 AND time != '' AND type != 'hotel'""",
+        (slug,),
+    ))
+    nodes.sort(key=lambda node: (event_entry_absolute(node), event_exit_absolute(node), node["title"]))
+
+    first_by_day = {}
+    last_by_day = {}
+    for node in nodes:
+        entry_day = event_entry_day(node)
+        exit_day = event_exit_day(node)
+        if entry_day > 0:
+            current = first_by_day.get(entry_day)
+            if current is None or event_entry_absolute(node) < event_entry_absolute(current):
+                first_by_day[entry_day] = node
+        if exit_day > 0:
+            current = last_by_day.get(exit_day)
+            if current is None or event_exit_absolute(node) > event_exit_absolute(current):
+                last_by_day[exit_day] = node
+
+    stays = db.execute(
+        """SELECT s.id AS stay_id, s.check_in_day, s.check_out_day,
+        l.id AS lodging_id, l.lat AS lodging_lat, l.lng AS lodging_lng
+        FROM stays s
+        JOIN lodgings l ON l.id = s.lodging_id AND l.trip_slug = s.trip_slug
+        WHERE s.trip_slug = ? AND s.status != 'cancelled'""",
+        (slug,),
+    ).fetchall()
+
+    generated_ids = []
+
+    def add_lodging_connection(kind, day, stay, node, source_point, target_point):
+        if haversine_meters(source_point[0], source_point[1], target_point[0], target_point[1]) < 80:
+            return
+        link_id = lodging_connection_id(kind, day, stay["stay_id"], stay["lodging_id"], node["id"])
+        transport_type = default_connection_transport_type(source_point, target_point)
+        upsert_route_segment(
+            db,
+            slug,
+            "lodging_connection",
+            link_id,
+            provider,
+            route_mode(transport_type),
+            source_point[0],
+            source_point[1],
+            target_point[0],
+            target_point[1],
+        )
+        generated_ids.append(link_id)
+
+    for stay in stays:
+        check_in_day = int(stay["check_in_day"] or 0)
+        check_out_day = int(stay["check_out_day"] or 0)
+        if check_in_day <= 0 or check_out_day <= check_in_day:
+            continue
+        lodging_point = (float(stay["lodging_lat"]), float(stay["lodging_lng"]))
+
+        for day in range(check_in_day + 1, check_out_day + 1):
+            first = first_by_day.get(day)
+            if not first:
+                continue
+            add_lodging_connection(
+                "start",
+                day,
+                stay,
+                first,
+                lodging_point,
+                node_anchor_point(first, event_entry_anchor(first)),
+            )
+
+        for day in range(check_in_day, check_out_day):
+            last = last_by_day.get(day)
+            if not last:
+                continue
+            add_lodging_connection(
+                "end",
+                day,
+                stay,
+                last,
+                node_anchor_point(last, event_exit_anchor(last)),
+                lodging_point,
+            )
+
+    if generated_ids:
+        placeholders = ",".join("?" for _ in generated_ids)
+        db.execute(
+            f"""DELETE FROM route_segments
+            WHERE trip_slug = ? AND link_type = 'lodging_connection'
+            AND link_id NOT IN ({placeholders})""",
+            (slug, *generated_ids),
+        )
+    else:
+        db.execute(
+            "DELETE FROM route_segments WHERE trip_slug = ? AND link_type = 'lodging_connection'",
+            (slug,),
+        )
 
 
 def refresh_edge_route(db, slug, edge_id):
@@ -1614,6 +1724,7 @@ def invalidate_node_routes(db, slug, node_id):
             OR (link_type = 'edge' AND link_id IN (
                 SELECT id FROM edges WHERE trip_slug = ? AND (source = ? OR target = ?)
             ))
+            OR link_type = 'lodging_connection'
         )""",
         (slug, node_id, slug, node_id, node_id),
     )
@@ -2176,6 +2287,7 @@ def create_lodging(slug):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (lodging_id, slug, *item.values()),
         )
+        refresh_route_segments(db, slug)
         trip = serialize_trip(db, slug)
     return jsonify(trip), 201
 
@@ -2202,6 +2314,7 @@ def update_lodging(slug, lodging_id):
             WHERE id=? AND trip_slug=?""",
             (*item.values(), lodging_id, slug),
         )
+        refresh_route_segments(db, slug)
         trip = serialize_trip(db, slug)
     if removed_image_urls:
         delete_unreferenced_uploads(removed_image_urls)
@@ -2217,6 +2330,7 @@ def delete_lodging(slug, lodging_id):
             return jsonify({"error": "Lodging not found"}), 404
         removed_image_urls = image_urls_from_source(existing)
         db.execute("DELETE FROM lodgings WHERE id = ? AND trip_slug = ?", (lodging_id, slug))
+        refresh_route_segments(db, slug)
         trip = serialize_trip(db, slug)
     if removed_image_urls:
         delete_unreferenced_uploads(removed_image_urls)
@@ -2241,6 +2355,7 @@ def create_stay(slug):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (stay_id, slug, *item.values()),
         )
+        refresh_route_segments(db, slug)
         trip = serialize_trip(db, slug)
     return jsonify(trip), 201
 
@@ -2263,6 +2378,7 @@ def update_stay(slug, stay_id):
             WHERE id=? AND trip_slug=?""",
             (*item.values(), stay_id, slug),
         )
+        refresh_route_segments(db, slug)
         trip = serialize_trip(db, slug)
     return jsonify(trip)
 
@@ -2273,6 +2389,7 @@ def delete_stay(slug, stay_id):
         if not db.execute("SELECT 1 FROM stays WHERE id = ? AND trip_slug = ?", (stay_id, slug)).fetchone():
             return jsonify({"error": "Stay not found"}), 404
         db.execute("DELETE FROM stays WHERE id = ? AND trip_slug = ?", (stay_id, slug))
+        refresh_route_segments(db, slug)
         trip = serialize_trip(db, slug)
     return jsonify(trip)
 

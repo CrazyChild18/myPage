@@ -77,7 +77,7 @@ export interface ItineraryEdge {
 
 export interface RouteSegment {
   id: string;
-  linkType: 'edge' | 'transport_node';
+  linkType: 'edge' | 'transport_node' | 'lodging_connection';
   linkId: string;
   provider: 'google' | 'amap' | 'manual';
   travelMode: 'drive' | 'walk' | 'transit' | 'flight' | 'other';
