@@ -38,7 +38,11 @@ ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 GEOCODE_CACHE_TTL = 24 * 60 * 60
 REVERSE_CACHE_TTL = 7 * 24 * 60 * 60
+ROUTE_CACHE_TTL = 29 * 24 * 60 * 60
 GEOCODE_CACHE = {}
+EDGE_TRANSPORT_TYPES = {"walk", "car", "taxi", "transit", "bus", "subway", "train", "high_speed_rail", "ferry", "other"}
+EDGE_ROUTE_PREFERENCES = {"recommended", "fastest", "shortest", "avoid_tolls", "avoid_highways"}
+EDGE_DISPLAY_STATUSES = {"visible", "hidden"}
 AIRPORT_COORDINATES = {
     "北京首都机场": (40.0801, 116.5847),
     "首都机场": (40.0801, 116.5847),
@@ -178,6 +182,10 @@ def init_database():
                 source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
                 target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
                 transport_type TEXT NOT NULL DEFAULT 'car',
+                route_preference TEXT NOT NULL DEFAULT 'recommended',
+                is_manual INTEGER NOT NULL DEFAULT 0,
+                is_locked INTEGER NOT NULL DEFAULT 0,
+                display_status TEXT NOT NULL DEFAULT 'visible',
                 duration TEXT,
                 distance TEXT
             );
@@ -185,6 +193,31 @@ def init_database():
                 cache_key TEXT PRIMARY KEY,
                 payload TEXT NOT NULL,
                 expires_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS route_segments (
+                id TEXT PRIMARY KEY,
+                trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
+                link_type TEXT NOT NULL,
+                link_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                travel_mode TEXT NOT NULL,
+                origin_lat REAL NOT NULL,
+                origin_lng REAL NOT NULL,
+                destination_lat REAL NOT NULL,
+                destination_lng REAL NOT NULL,
+                request_fingerprint TEXT NOT NULL,
+                geometry_format TEXT NOT NULL DEFAULT 'latlng_json',
+                geometry_json TEXT NOT NULL DEFAULT '[]',
+                coord_system TEXT NOT NULL DEFAULT 'wgs84',
+                distance_meters INTEGER,
+                duration_seconds INTEGER,
+                distance_text TEXT NOT NULL DEFAULT '',
+                duration_text TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'fresh',
+                expires_at REAL NOT NULL DEFAULT 0,
+                error_message TEXT NOT NULL DEFAULT '',
+                requested_at REAL NOT NULL DEFAULT 0,
+                UNIQUE(trip_slug, link_type, link_id)
             );
             """
         )
@@ -230,6 +263,13 @@ def init_database():
             ("arrival_provider_place_id", "TEXT NOT NULL DEFAULT ''"),
         ):
             add_column_if_missing(db, "nodes", column, definition)
+        for column, definition in (
+            ("route_preference", "TEXT NOT NULL DEFAULT 'recommended'"),
+            ("is_manual", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_locked", "INTEGER NOT NULL DEFAULT 0"),
+            ("display_status", "TEXT NOT NULL DEFAULT 'visible'"),
+        ):
+            add_column_if_missing(db, "edges", column, definition)
         if trip_map_columns_added:
             infer_trip_map_defaults(db)
         migrate_journey_routes(db)
@@ -339,6 +379,32 @@ def row_to_node(row):
 def row_to_edge(row):
     item = dict(row)
     item["transportType"] = item.pop("transport_type")
+    item["routePreference"] = item.pop("route_preference", "recommended")
+    item["isManual"] = bool(item.pop("is_manual", 0))
+    item["isLocked"] = bool(item.pop("is_locked", 0))
+    item["displayStatus"] = item.pop("display_status", "visible")
+    return item
+
+
+def row_to_route_segment(row):
+    item = dict(row)
+    try:
+        geometry = json.loads(item.pop("geometry_json") or "[]")
+    except json.JSONDecodeError:
+        geometry = []
+    item["geometry"] = geometry if isinstance(geometry, list) else []
+    item["linkType"] = item.pop("link_type")
+    item["linkId"] = item.pop("link_id")
+    item["travelMode"] = item.pop("travel_mode")
+    item["geometryFormat"] = item.pop("geometry_format")
+    item["coordSystem"] = item.pop("coord_system")
+    item["distanceMeters"] = item.pop("distance_meters")
+    item["durationSeconds"] = item.pop("duration_seconds")
+    item["distanceText"] = item.pop("distance_text")
+    item["durationText"] = item.pop("duration_text")
+    item["expiresAt"] = item.pop("expires_at")
+    item["errorMessage"] = item.pop("error_message")
+    item["requestedAt"] = item.pop("requested_at")
     return item
 
 
@@ -365,7 +431,20 @@ def serialize_trip(db, slug):
     result["edges"] = [
         row_to_edge(row)
         for row in db.execute(
-            "SELECT id, source, target, transport_type, duration, distance FROM edges WHERE trip_slug = ? ORDER BY rowid",
+            """SELECT id, source, target, transport_type, route_preference, is_manual,
+            is_locked, display_status, duration, distance
+            FROM edges WHERE trip_slug = ? ORDER BY rowid""",
+            (slug,),
+        )
+    ]
+    result["routeSegments"] = [
+        row_to_route_segment(row)
+        for row in db.execute(
+            """SELECT id, link_type, link_id, provider, travel_mode, origin_lat, origin_lng,
+            destination_lat, destination_lng, geometry_format, geometry_json, coord_system,
+            distance_meters, duration_seconds, distance_text, duration_text, status,
+            expires_at, error_message, requested_at
+            FROM route_segments WHERE trip_slug = ? ORDER BY link_type, link_id""",
             (slug,),
         )
     ]
@@ -705,6 +784,476 @@ def gcj02_to_wgs84(lat, lng):
         return lat, lng
     converted_lat, converted_lng = wgs84_to_gcj02(lat, lng)
     return lat * 2 - converted_lat, lng * 2 - converted_lng
+
+
+def haversine_meters(origin_lat, origin_lng, destination_lat, destination_lng):
+    radius_meters = 6371000
+    lat1 = math.radians(origin_lat)
+    lat2 = math.radians(destination_lat)
+    delta_lat = math.radians(destination_lat - origin_lat)
+    delta_lng = math.radians(destination_lng - origin_lng)
+    a = math.sin(delta_lat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lng / 2) ** 2
+    return int(2 * radius_meters * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
+
+def format_distance(meters):
+    if meters is None:
+        return ""
+    if meters >= 1000:
+        return f"{meters / 1000:.1f} km"
+    return f"{int(meters)} m"
+
+
+def format_duration(seconds):
+    if seconds is None:
+        return ""
+    minutes = max(1, round(seconds / 60))
+    if minutes >= 60:
+        hours = minutes // 60
+        remainder = minutes % 60
+        return f"{hours}小时{remainder}分" if remainder else f"{hours}小时"
+    return f"{minutes}分钟"
+
+
+def parse_google_duration(value):
+    text = str(value or "")
+    if text.endswith("s"):
+        try:
+            return int(float(text[:-1]))
+        except ValueError:
+            return None
+    return None
+
+
+def decode_google_polyline(value):
+    coordinates = []
+    index = 0
+    lat = 0
+    lng = 0
+    while index < len(value):
+        result = 0
+        shift = 0
+        while True:
+            byte = ord(value[index]) - 63
+            index += 1
+            result |= (byte & 0x1F) << shift
+            shift += 5
+            if byte < 0x20:
+                break
+        lat += ~(result >> 1) if result & 1 else result >> 1
+
+        result = 0
+        shift = 0
+        while True:
+            byte = ord(value[index]) - 63
+            index += 1
+            result |= (byte & 0x1F) << shift
+            shift += 5
+            if byte < 0x20:
+                break
+        lng += ~(result >> 1) if result & 1 else result >> 1
+        coordinates.append([lat / 1e5, lng / 1e5])
+    return coordinates
+
+
+def great_circle_geometry(origin_lat, origin_lng, destination_lat, destination_lng):
+    start_phi = math.radians(origin_lat)
+    start_lambda = math.radians(origin_lng)
+    end_phi = math.radians(destination_lat)
+    end_lambda = math.radians(destination_lng)
+    start = [
+        math.cos(start_phi) * math.cos(start_lambda),
+        math.cos(start_phi) * math.sin(start_lambda),
+        math.sin(start_phi),
+    ]
+    end = [
+        math.cos(end_phi) * math.cos(end_lambda),
+        math.cos(end_phi) * math.sin(end_lambda),
+        math.sin(end_phi),
+    ]
+    omega = math.acos(max(-1, min(1, sum(start[index] * end[index] for index in range(3)))))
+    if not math.isfinite(omega) or omega < 1e-6:
+        return [[origin_lat, origin_lng], [destination_lat, destination_lng]]
+    previous_lng = origin_lng
+    path = []
+    for index in range(33):
+        t = index / 32
+        a = math.sin((1 - t) * omega) / math.sin(omega)
+        b = math.sin(t * omega) / math.sin(omega)
+        x = a * start[0] + b * end[0]
+        y = a * start[1] + b * end[1]
+        z = a * start[2] + b * end[2]
+        lat = math.degrees(math.atan2(z, math.sqrt(x * x + y * y)))
+        lng = math.degrees(math.atan2(y, x))
+        while lng - previous_lng > 180:
+            lng -= 360
+        while lng - previous_lng < -180:
+            lng += 360
+        previous_lng = lng
+        path.append([lat, lng])
+    return path
+
+
+def route_mode(value):
+    mode = str(value or "").strip()
+    if mode in ("walk",):
+        return "walk"
+    if mode in ("flight",):
+        return "flight"
+    if mode in ("train", "high_speed_rail", "subway", "bus", "transit"):
+        return "transit"
+    if mode in ("ferry",):
+        return "other"
+    return "drive"
+
+
+def route_fingerprint(provider, travel_mode, origin_lat, origin_lng, destination_lat, destination_lng):
+    return json.dumps(
+        {
+            "provider": provider,
+            "travel_mode": travel_mode,
+            "origin": [round(origin_lat, 6), round(origin_lng, 6)],
+            "destination": [round(destination_lat, 6), round(destination_lng, 6)],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def google_route(origin_lat, origin_lng, destination_lat, destination_lng, travel_mode):
+    if not GOOGLE_MAPS_API_KEY:
+        raise RuntimeError("GOOGLE_MAPS_API_KEY is not configured")
+    google_mode = {
+        "walk": "WALK",
+        "drive": "DRIVE",
+        "transit": "TRANSIT",
+    }.get(travel_mode)
+    if not google_mode:
+        raise RuntimeError(f"Google route mode not supported: {travel_mode}")
+    result = json_post_request(
+        "https://routes.googleapis.com/directions/v2:computeRoutes",
+        {
+            "origin": {"location": {"latLng": {"latitude": origin_lat, "longitude": origin_lng}}},
+            "destination": {"location": {"latLng": {"latitude": destination_lat, "longitude": destination_lng}}},
+            "travelMode": google_mode,
+            "languageCode": "zh-CN",
+            "units": "METRIC",
+        },
+        {
+            "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+            "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline",
+        },
+    )
+    route = next(iter(result.get("routes", [])), None)
+    if not route:
+        raise RuntimeError("Google route returned no route")
+    encoded = (route.get("polyline") or {}).get("encodedPolyline", "")
+    geometry = decode_google_polyline(encoded) if encoded else []
+    if len(geometry) < 2:
+        raise RuntimeError("Google route returned no geometry")
+    distance_meters = int(route.get("distanceMeters") or 0) or None
+    duration_seconds = parse_google_duration(route.get("duration"))
+    return {
+        "provider": "google",
+        "geometry": geometry,
+        "coord_system": "wgs84",
+        "geometry_format": "latlng_json",
+        "distance_meters": distance_meters,
+        "duration_seconds": duration_seconds,
+        "distance_text": format_distance(distance_meters),
+        "duration_text": format_duration(duration_seconds),
+        "status": "fresh",
+        "error_message": "",
+    }
+
+
+def dedupe_geometry(points):
+    geometry = []
+    for point in points:
+        if not geometry or geometry[-1] != point:
+            geometry.append(point)
+    return geometry
+
+
+def amap_route(origin_lat, origin_lng, destination_lat, destination_lng, travel_mode):
+    if travel_mode not in ("walk", "drive"):
+        raise RuntimeError(f"Amap route mode not supported: {travel_mode}")
+    origin_gcj_lat, origin_gcj_lng = wgs84_to_gcj02(origin_lat, origin_lng)
+    destination_gcj_lat, destination_gcj_lng = wgs84_to_gcj02(destination_lat, destination_lng)
+    result = amap_request(
+        "direction/walking" if travel_mode == "walk" else "direction/driving",
+        {
+            "origin": f"{origin_gcj_lng},{origin_gcj_lat}",
+            "destination": f"{destination_gcj_lng},{destination_gcj_lat}",
+            "extensions": "base",
+        },
+    )
+    route = result.get("route") or {}
+    path = next(iter(route.get("paths", [])), None)
+    if not path:
+        raise RuntimeError("Amap route returned no route")
+    points = []
+    for step in path.get("steps", []):
+        for item in str(step.get("polyline", "")).split(";"):
+            if not item or "," not in item:
+                continue
+            lng_text, lat_text = item.split(",", 1)
+            points.append([float(lat_text), float(lng_text)])
+    geometry = dedupe_geometry(points)
+    if len(geometry) < 2:
+        raise RuntimeError("Amap route returned no geometry")
+    distance_meters = int(float(path.get("distance") or 0)) or None
+    duration_seconds = int(float(path.get("duration") or 0)) or None
+    return {
+        "provider": "amap",
+        "geometry": geometry,
+        "coord_system": "gcj02",
+        "geometry_format": "latlng_json",
+        "distance_meters": distance_meters,
+        "duration_seconds": duration_seconds,
+        "distance_text": format_distance(distance_meters),
+        "duration_text": format_duration(duration_seconds),
+        "status": "fresh",
+        "error_message": "",
+    }
+
+
+def fallback_route(origin_lat, origin_lng, destination_lat, destination_lng, travel_mode, error_message="", duration_text=""):
+    distance_meters = haversine_meters(origin_lat, origin_lng, destination_lat, destination_lng)
+    if travel_mode == "flight":
+        geometry = great_circle_geometry(origin_lat, origin_lng, destination_lat, destination_lng)
+        geometry_format = "great_circle"
+        status = "fresh"
+    else:
+        geometry = [[origin_lat, origin_lng], [destination_lat, destination_lng]]
+        geometry_format = "latlng_json"
+        status = "failed" if error_message else "fallback"
+    return {
+        "provider": "manual",
+        "geometry": geometry,
+        "coord_system": "wgs84",
+        "geometry_format": geometry_format,
+        "distance_meters": distance_meters,
+        "duration_seconds": None,
+        "distance_text": format_distance(distance_meters),
+        "duration_text": duration_text,
+        "status": status,
+        "error_message": str(error_message)[:500],
+    }
+
+
+def route_payload(provider, origin_lat, origin_lng, destination_lat, destination_lng, travel_mode, duration_text=""):
+    if travel_mode == "flight":
+        return fallback_route(origin_lat, origin_lng, destination_lat, destination_lng, travel_mode, duration_text=duration_text)
+    if provider == "google":
+        return google_route(origin_lat, origin_lng, destination_lat, destination_lng, travel_mode)
+    if provider == "amap":
+        return amap_route(origin_lat, origin_lng, destination_lat, destination_lng, travel_mode)
+    raise RuntimeError(f"Route provider not supported: {provider}")
+
+
+def upsert_route_segment(db, slug, link_type, link_id, provider, travel_mode, origin_lat, origin_lng, destination_lat, destination_lng, duration_text=""):
+    fingerprint = route_fingerprint(provider, travel_mode, origin_lat, origin_lng, destination_lat, destination_lng)
+    now = time.time()
+    existing = db.execute(
+        """SELECT * FROM route_segments
+        WHERE trip_slug = ? AND link_type = ? AND link_id = ?""",
+        (slug, link_type, link_id),
+    ).fetchone()
+    if existing and existing["request_fingerprint"] == fingerprint and existing["expires_at"] > now and existing["status"] == "fresh":
+        return dict(existing)
+    try:
+        payload = route_payload(provider, origin_lat, origin_lng, destination_lat, destination_lng, travel_mode, duration_text)
+    except Exception as error:
+        payload = fallback_route(origin_lat, origin_lng, destination_lat, destination_lng, travel_mode, str(error), duration_text)
+    segment_id = existing["id"] if existing else f"route-{uuid.uuid4().hex[:12]}"
+    db.execute(
+        """INSERT INTO route_segments
+        (id, trip_slug, link_type, link_id, provider, travel_mode, origin_lat, origin_lng, destination_lat, destination_lng,
+        request_fingerprint, geometry_format, geometry_json, coord_system, distance_meters, duration_seconds,
+        distance_text, duration_text, status, expires_at, error_message, requested_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(trip_slug, link_type, link_id) DO UPDATE SET
+        id=excluded.id,
+        provider=excluded.provider,
+        travel_mode=excluded.travel_mode,
+        origin_lat=excluded.origin_lat,
+        origin_lng=excluded.origin_lng,
+        destination_lat=excluded.destination_lat,
+        destination_lng=excluded.destination_lng,
+        request_fingerprint=excluded.request_fingerprint,
+        geometry_format=excluded.geometry_format,
+        geometry_json=excluded.geometry_json,
+        coord_system=excluded.coord_system,
+        distance_meters=excluded.distance_meters,
+        duration_seconds=excluded.duration_seconds,
+        distance_text=excluded.distance_text,
+        duration_text=excluded.duration_text,
+        status=excluded.status,
+        expires_at=excluded.expires_at,
+        error_message=excluded.error_message,
+        requested_at=excluded.requested_at""",
+        (
+            segment_id,
+            slug,
+            link_type,
+            link_id,
+            payload["provider"],
+            travel_mode,
+            origin_lat,
+            origin_lng,
+            destination_lat,
+            destination_lng,
+            fingerprint,
+            payload["geometry_format"],
+            json.dumps(payload["geometry"], ensure_ascii=False, separators=(",", ":")),
+            payload["coord_system"],
+            payload["distance_meters"],
+            payload["duration_seconds"],
+            payload["distance_text"],
+            payload["duration_text"],
+            payload["status"],
+            now + ROUTE_CACHE_TTL,
+            payload["error_message"],
+            now,
+        ),
+    )
+    return db.execute(
+        "SELECT * FROM route_segments WHERE trip_slug = ? AND link_type = ? AND link_id = ?",
+        (slug, link_type, link_id),
+    ).fetchone()
+
+
+def refresh_route_segments(db, slug):
+    trip = db.execute("SELECT map_provider FROM trips WHERE slug = ?", (slug,)).fetchone()
+    provider = (trip["map_provider"] if trip else "google") or "google"
+    edges = db.execute(
+        """SELECT e.id, e.transport_type, source.lat AS source_lat, source.lng AS source_lng,
+        target.lat AS target_lat, target.lng AS target_lng
+        FROM edges e
+        JOIN nodes source ON source.id = e.source
+        JOIN nodes target ON target.id = e.target
+        WHERE e.trip_slug = ? AND e.display_status != 'hidden'""",
+        (slug,),
+    ).fetchall()
+    for edge in edges:
+        segment = upsert_route_segment(
+            db,
+            slug,
+            "edge",
+            edge["id"],
+            provider,
+            route_mode(edge["transport_type"]),
+            edge["source_lat"],
+            edge["source_lng"],
+            edge["target_lat"],
+            edge["target_lng"],
+        )
+        if segment:
+            db.execute(
+                "UPDATE edges SET distance = ?, duration = ? WHERE id = ? AND trip_slug = ?",
+                (segment["distance_text"] or None, segment["duration_text"] or None, edge["id"], slug),
+            )
+
+    transports = db.execute(
+        """SELECT id, transport_mode, departure_lat, departure_lng, arrival_lat, arrival_lng, duration
+        FROM nodes
+        WHERE trip_slug = ? AND type = 'transport'
+        AND departure_lat IS NOT NULL AND departure_lng IS NOT NULL
+        AND arrival_lat IS NOT NULL AND arrival_lng IS NOT NULL""",
+        (slug,),
+    ).fetchall()
+    for node in transports:
+        upsert_route_segment(
+            db,
+            slug,
+            "transport_node",
+            node["id"],
+            provider,
+            route_mode(node["transport_mode"]),
+            node["departure_lat"],
+            node["departure_lng"],
+            node["arrival_lat"],
+            node["arrival_lng"],
+            node["duration"] or "",
+        )
+
+    db.execute(
+        """DELETE FROM route_segments
+        WHERE trip_slug = ? AND link_type = 'edge'
+        AND link_id NOT IN (SELECT id FROM edges WHERE trip_slug = ?)""",
+        (slug, slug),
+    )
+    db.execute(
+        """DELETE FROM route_segments
+        WHERE trip_slug = ? AND link_type = 'edge'
+        AND link_id IN (SELECT id FROM edges WHERE trip_slug = ? AND display_status = 'hidden')""",
+        (slug, slug),
+    )
+    db.execute(
+        """DELETE FROM route_segments
+        WHERE trip_slug = ? AND link_type = 'transport_node'
+        AND link_id NOT IN (SELECT id FROM nodes WHERE trip_slug = ? AND type = 'transport')""",
+        (slug, slug),
+            )
+
+
+def refresh_edge_route(db, slug, edge_id):
+    trip = db.execute("SELECT map_provider FROM trips WHERE slug = ?", (slug,)).fetchone()
+    provider = (trip["map_provider"] if trip else "google") or "google"
+    edge = db.execute(
+        """SELECT e.id, e.transport_type, e.display_status,
+        source.lat AS source_lat, source.lng AS source_lng,
+        target.lat AS target_lat, target.lng AS target_lng
+        FROM edges e
+        JOIN nodes source ON source.id = e.source
+        JOIN nodes target ON target.id = e.target
+        WHERE e.trip_slug = ? AND e.id = ?""",
+        (slug, edge_id),
+    ).fetchone()
+    if not edge:
+        return None
+    if edge["display_status"] == "hidden":
+        db.execute(
+            "DELETE FROM route_segments WHERE trip_slug = ? AND link_type = 'edge' AND link_id = ?",
+            (slug, edge_id),
+        )
+        db.execute(
+            "UPDATE edges SET distance = NULL, duration = NULL WHERE id = ? AND trip_slug = ?",
+            (edge_id, slug),
+        )
+        return None
+    segment = upsert_route_segment(
+        db,
+        slug,
+        "edge",
+        edge["id"],
+        provider,
+        route_mode(edge["transport_type"]),
+        edge["source_lat"],
+        edge["source_lng"],
+        edge["target_lat"],
+        edge["target_lng"],
+    )
+    if segment:
+        db.execute(
+            "UPDATE edges SET distance = ?, duration = ? WHERE id = ? AND trip_slug = ?",
+            (segment["distance_text"] or None, segment["duration_text"] or None, edge_id, slug),
+        )
+    return segment
+
+
+def invalidate_node_routes(db, slug, node_id):
+    db.execute(
+        """DELETE FROM route_segments
+        WHERE trip_slug = ? AND (
+            (link_type = 'transport_node' AND link_id = ?)
+            OR (link_type = 'edge' AND link_id IN (
+                SELECT id FROM edges WHERE trip_slug = ? AND (source = ? OR target = ?)
+            ))
+        )""",
+        (slug, node_id, slug, node_id, node_id),
+    )
 
 
 def amap_text(value):
@@ -1070,6 +1619,26 @@ def node_payload(payload, existing=None):
     }
 
 
+def edge_payload(payload, existing):
+    source = {**dict(existing), **payload}
+    transport_type = str(source.get("transportType") or source.get("transport_type") or "car").strip()
+    route_preference = str(source.get("routePreference") or source.get("route_preference") or "recommended").strip()
+    display_status = str(source.get("displayStatus") or source.get("display_status") or "visible").strip()
+    if transport_type not in EDGE_TRANSPORT_TYPES:
+        raise ValueError("Unsupported route transport type")
+    if route_preference not in EDGE_ROUTE_PREFERENCES:
+        raise ValueError("Unsupported route preference")
+    if display_status not in EDGE_DISPLAY_STATUSES:
+        raise ValueError("Unsupported route display status")
+    return {
+        "transport_type": transport_type,
+        "route_preference": route_preference,
+        "is_manual": 1 if source.get("isManual", source.get("is_manual", True)) else 0,
+        "is_locked": 1 if source.get("isLocked", source.get("is_locked", True)) else 0,
+        "display_status": display_status,
+    }
+
+
 @app.post("/api/trips/<slug>/nodes")
 def create_node(slug):
     payload = request.get_json(force=True)
@@ -1114,6 +1683,7 @@ def update_node(slug, node_id):
             WHERE id=? AND trip_slug=?""",
             (*item.values(), node_id, slug),
         )
+        invalidate_node_routes(db, slug, node_id)
     if removed_image_urls:
         delete_unreferenced_uploads(removed_image_urls)
     return jsonify(row_to_node({"id": node_id, **item}))
@@ -1127,10 +1697,41 @@ def delete_node(slug, node_id):
         if not existing:
             return jsonify({"error": "Node not found"}), 404
         removed_image_urls = image_urls_from_source(existing)
+        invalidate_node_routes(db, slug, node_id)
         db.execute("DELETE FROM nodes WHERE id = ? AND trip_slug = ?", (node_id, slug))
     if removed_image_urls:
         delete_unreferenced_uploads(removed_image_urls)
     return "", 204
+
+
+@app.put("/api/trips/<slug>/edges/<edge_id>")
+def update_edge(slug, edge_id):
+    payload = request.get_json(force=True)
+    with connection() as db:
+        existing = db.execute("SELECT * FROM edges WHERE id = ? AND trip_slug = ?", (edge_id, slug)).fetchone()
+        if not existing:
+            return jsonify({"error": "Route segment not found"}), 404
+        try:
+            item = edge_payload(payload, existing)
+        except (ValueError, TypeError) as error:
+            return jsonify({"error": str(error)}), 400
+        db.execute(
+            """UPDATE edges SET transport_type = ?, route_preference = ?, is_manual = ?,
+            is_locked = ?, display_status = ?
+            WHERE id = ? AND trip_slug = ?""",
+            (
+                item["transport_type"],
+                item["route_preference"],
+                item["is_manual"],
+                item["is_locked"],
+                item["display_status"],
+                edge_id,
+                slug,
+            ),
+        )
+        refresh_edge_route(db, slug, edge_id)
+        trip = serialize_trip(db, slug)
+    return jsonify(trip)
 
 
 @app.post("/api/trips/<slug>/auto-connect")
@@ -1143,31 +1744,67 @@ def auto_connect(slug):
             ORDER BY day, time""",
             (slug,),
         ))
-        db.execute("DELETE FROM edges WHERE trip_slug = ?", (slug,))
+        existing_edges = {
+            row["id"]: dict(row)
+            for row in db.execute(
+                """SELECT id, transport_type, route_preference, is_manual, is_locked, display_status
+                FROM edges WHERE trip_slug = ?""",
+                (slug,),
+            )
+        }
         generated = []
         for index, current in enumerate(nodes[:-1]):
             following = nodes[index + 1]
             if current["day"] != following["day"]:
                 continue
+            edge_id = f"auto-{current['id']}-{following['id']}"
+            existing = existing_edges.get(edge_id)
             km = math.sqrt((current["lat"] - following["lat"]) ** 2 + (current["lng"] - following["lng"]) ** 2) * 85
             transport_type = "walk" if km < 2 else "car"
             duration = f"{max(5, round(km * (15 if transport_type == 'walk' else 1.3)))} min"
+            if existing and existing["is_locked"]:
+                transport_type = existing["transport_type"]
             generated.append(
                 {
-                    "id": f"auto-{current['id']}-{following['id']}",
+                    "id": edge_id,
                     "trip_slug": slug,
                     "source": current["id"],
                     "target": following["id"],
                     "transport_type": transport_type,
+                    "route_preference": existing["route_preference"] if existing and existing["is_locked"] else "recommended",
+                    "is_manual": existing["is_manual"] if existing and existing["is_locked"] else 0,
+                    "is_locked": existing["is_locked"] if existing and existing["is_locked"] else 0,
+                    "display_status": existing["display_status"] if existing and existing["is_locked"] else "visible",
                     "duration": duration,
                     "distance": f"{km:.1f} km",
                 }
             )
+        generated_ids = [edge["id"] for edge in generated]
+        if generated_ids:
+            placeholders = ",".join("?" for _ in generated_ids)
+            db.execute(
+                f"DELETE FROM edges WHERE trip_slug = ? AND id NOT IN ({placeholders})",
+                (slug, *generated_ids),
+            )
+        else:
+            db.execute("DELETE FROM edges WHERE trip_slug = ?", (slug,))
         db.executemany(
-            """INSERT INTO edges (id, trip_slug, source, target, transport_type, duration, distance)
-            VALUES (:id, :trip_slug, :source, :target, :transport_type, :duration, :distance)""",
+            """INSERT INTO edges
+            (id, trip_slug, source, target, transport_type, route_preference, is_manual, is_locked, display_status, duration, distance)
+            VALUES (:id, :trip_slug, :source, :target, :transport_type, :route_preference, :is_manual, :is_locked, :display_status, :duration, :distance)
+            ON CONFLICT(id) DO UPDATE SET
+            source=excluded.source,
+            target=excluded.target,
+            transport_type=excluded.transport_type,
+            route_preference=excluded.route_preference,
+            is_manual=excluded.is_manual,
+            is_locked=excluded.is_locked,
+            display_status=excluded.display_status,
+            duration=excluded.duration,
+            distance=excluded.distance""",
             generated,
         )
+        refresh_route_segments(db, slug)
         trip = serialize_trip(db, slug)
     return jsonify(trip)
 

@@ -4,6 +4,8 @@ import {
   BedDouble,
   Bus,
   Car,
+  Eye,
+  EyeOff,
   GripVertical,
   Image,
   LockKeyhole,
@@ -25,7 +27,7 @@ import {
 import LocationPicker from '../components/LocationPicker/LocationPicker';
 import MapView from '../components/Map/MapView';
 import { useItineraryStore } from '../store/useItineraryStore';
-import { ItineraryNode, ItineraryType, TransportMode } from '../types';
+import { EdgeDisplayStatus, EdgeTransportType, ItineraryEdge, ItineraryNode, ItineraryType, TransportMode } from '../types';
 import { mapProviderForTrip } from '../map/provider';
 import { compareItineraryNodes, isScheduledNode, isUnscheduledPointNode } from '../utils/itinerary';
 import {
@@ -74,6 +76,15 @@ const transportModeOptions: Array<{ value: TransportMode; label: string; icon: R
   { value: 'other', label: '其他', icon: Route },
 ];
 
+const edgeTransportOptions: Array<{ value: EdgeTransportType; label: string; hint: string; icon: React.ComponentType<{ className?: string }> }> = [
+  { value: 'walk', label: '步行', hint: '短距离城市移动', icon: MapPin },
+  { value: 'car', label: '自驾', hint: '租车/驾车路线', icon: Car },
+  { value: 'taxi', label: '打车', hint: '按驾车路线估算', icon: Car },
+  { value: 'transit', label: '公共交通', hint: '公交/地铁/铁路', icon: Bus },
+  { value: 'ferry', label: '轮渡', hint: '暂按人工/直线兜底', icon: Ship },
+  { value: 'other', label: '其他', hint: '保留接续关系', icon: Route },
+];
+
 const typeLabels: Record<ItineraryType, string> = {
   transport: '交通',
   transfer: '转机',
@@ -82,6 +93,15 @@ const typeLabels: Record<ItineraryType, string> = {
   sightseeing: '景点',
   leisure: '休闲',
   shopping: '采购',
+};
+
+const edgeTransportLabel = (type?: EdgeTransportType) =>
+  edgeTransportOptions.find((option) => option.value === type)?.label || '接续';
+
+const defaultEdgeTransportType = (source?: ItineraryNode | null, target?: ItineraryNode | null): EdgeTransportType => {
+  if (!source || !target) return 'car';
+  const km = Math.sqrt((source.lat - target.lat) ** 2 + (source.lng - target.lng) ** 2) * 85;
+  return km < 2 ? 'walk' : 'car';
 };
 
 const typeTone: Record<ItineraryType, { card: string; badge: string; event: string }> = {
@@ -631,15 +651,20 @@ export default function AdminView() {
     selectedTripSlug,
     trip,
     nodes,
+    edges,
+    routeSegments,
     addNode,
     updateNode,
+    updateEdge,
     deleteNode,
     autoConnectEdges,
     saving,
     activeDay,
     activeNodeId,
+    activeEdgeId,
     setActiveDay,
     setActiveNodeId,
+    setActiveEdgeId,
   } = useItineraryStore();
 
   const dayNumbers = useMemo(() => {
@@ -673,6 +698,11 @@ export default function AdminView() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm({ day: currentDay, date: currentDate }));
+  const [edgeDraft, setEdgeDraft] = useState<{ transportType: EdgeTransportType; displayStatus: EdgeDisplayStatus; isLocked: boolean }>({
+    transportType: 'car',
+    displayStatus: 'visible',
+    isLocked: true,
+  });
   const [message, setMessage] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [imageUrlInput, setImageUrlInput] = useState('');
@@ -736,7 +766,25 @@ export default function AdminView() {
   const currentDayTimezone = dayTimeZones.get(currentDay) || DEFAULT_TIMEZONE;
   const editingNode = useMemo(() => editingId ? nodes.find((node) => node.id === editingId) || null : null, [editingId, nodes]);
   const editingExistingTransport = editingNode?.type === 'transport';
+  const editingEdge = useMemo(() => activeEdgeId ? edges.find((edge) => edge.id === activeEdgeId) || null : null, [activeEdgeId, edges]);
+  const editingEdgeSource = useMemo(() => editingEdge ? nodes.find((node) => node.id === editingEdge.source) || null : null, [editingEdge, nodes]);
+  const editingEdgeTarget = useMemo(() => editingEdge ? nodes.find((node) => node.id === editingEdge.target) || null : null, [editingEdge, nodes]);
+  const editingRouteSegment = useMemo(
+    () => editingEdge ? routeSegments.find((segment) => segment.linkType === 'edge' && segment.linkId === editingEdge.id) || null : null,
+    [editingEdge, routeSegments],
+  );
   const mapProvider = mapProviderForTrip(trip);
+
+  useEffect(() => {
+    if (!editingEdge) return;
+    setEditingId(null);
+    setEdgeDraft({
+      transportType: editingEdge.transportType || 'car',
+      displayStatus: editingEdge.displayStatus || 'visible',
+      isLocked: editingEdge.isLocked ?? true,
+    });
+  }, [editingEdge]);
+
   const currentDayNodes = useMemo(
     () => sortedNodes.filter((node) => isScheduledNode(node) && scheduleSegmentForDay(node, currentDay, dateByDay, trip?.start_date)),
     [currentDay, dateByDay, sortedNodes, trip?.start_date],
@@ -815,6 +863,23 @@ export default function AdminView() {
       ].some((value) => (value || '').toLocaleLowerCase().includes(keyword));
     });
   }, [libraryFilter, libraryNodes, libraryQuery]);
+  const currentDayRouteEdges = useMemo(
+    () => edges
+      .filter((edge) => {
+        const source = nodes.find((node) => node.id === edge.source);
+        const target = nodes.find((node) => node.id === edge.target);
+        if (!source || !target || !isScheduledNode(source) || !isScheduledNode(target)) return false;
+        return source.day === currentDay || target.day === currentDay;
+      })
+      .map((edge) => ({
+        edge,
+        source: nodes.find((node) => node.id === edge.source) || null,
+        target: nodes.find((node) => node.id === edge.target) || null,
+        segment: routeSegments.find((segment) => segment.linkType === 'edge' && segment.linkId === edge.id) || null,
+      }))
+      .filter((item) => item.source && item.target) as Array<{ edge: ItineraryEdge; source: ItineraryNode; target: ItineraryNode; segment: typeof routeSegments[number] | null }>,
+    [currentDay, edges, nodes, routeSegments],
+  );
   const draggedNode = useMemo(
     () => draggedNodeId ? nodes.find((node) => node.id === draggedNodeId) || null : null,
     [draggedNodeId, nodes],
@@ -1054,6 +1119,7 @@ export default function AdminView() {
     };
     const pointDuration = defaultDurationByType[base.type] || SLOT_MINUTES;
     setEditingId(null);
+    setActiveEdgeId(null);
     setForm(kind === 'point' && scheduled
       ? { ...base, duration: formatDurationText(pointDuration), ...endFromStart(currentDay, currentDate, time, pointDuration, dateByDay) }
       : base);
@@ -1085,6 +1151,10 @@ export default function AdminView() {
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (editingEdge) {
+      await submitEdge();
+      return;
+    }
     try {
       const normalized = normalizeFormForSubmit(form);
       if (editingExistingTransport) {
@@ -1102,6 +1172,38 @@ export default function AdminView() {
       });
     } catch {
       toast('保存失败，请检查输入内容');
+    }
+  };
+
+  const submitEdge = async () => {
+    if (!editingEdge) return;
+    try {
+      await updateEdge(editingEdge.id, {
+        transportType: edgeDraft.transportType,
+        displayStatus: edgeDraft.displayStatus,
+        isManual: true,
+        isLocked: edgeDraft.isLocked,
+      });
+      toast(`已更新路段：${edgeTransportLabel(edgeDraft.transportType)}`);
+    } catch {
+      toast('路段保存失败，请检查路线服务');
+    }
+  };
+
+  const followAutoRoute = async () => {
+    if (!editingEdge) return;
+    const autoTransportType = defaultEdgeTransportType(editingEdgeSource, editingEdgeTarget);
+    try {
+      await updateEdge(editingEdge.id, {
+        transportType: autoTransportType,
+        displayStatus: edgeDraft.displayStatus,
+        isManual: false,
+        isLocked: false,
+      });
+      setEdgeDraft((current) => ({ ...current, transportType: autoTransportType, isLocked: false }));
+      toast('该路段已改为跟随自动重建');
+    } catch {
+      toast('路段更新失败，请重试');
     }
   };
 
@@ -2186,13 +2288,46 @@ export default function AdminView() {
             <div className="h-56">
               <MapView />
             </div>
+            {currentDayRouteEdges.length > 0 && (
+              <div className="max-h-32 space-y-1 overflow-y-auto border-t border-slate-200 bg-white/80 p-2">
+                <div className="mb-1 flex items-center justify-between text-[9px] font-black text-slate-400">
+                  <span>D{currentDay} 地点接续</span>
+                  <span>{currentDayRouteEdges.length} 段</span>
+                </div>
+                {currentDayRouteEdges.map(({ edge, source, target, segment }) => {
+                  const active = activeEdgeId === edge.id;
+                  const hidden = edge.displayStatus === 'hidden';
+                  return (
+                    <button
+                      key={edge.id}
+                      type="button"
+                      onClick={() => setActiveEdgeId(edge.id)}
+                      className={`flex w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left transition ${active ? 'border-rose-200 bg-rose-50 text-rose-700 shadow-sm' : hidden ? 'border-slate-100 bg-slate-50 text-slate-400 hover:bg-white' : 'border-white bg-white/75 text-slate-600 hover:border-slate-200 hover:bg-white'}`}
+                    >
+                      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${hidden ? 'bg-slate-200 text-slate-500' : 'bg-rose-100 text-rose-600'}`}>
+                        {hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Route className="h-3.5 w-3.5" />}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[10px] font-black">{source.title} → {target.title}</span>
+                        <span className="mt-0.5 block truncate text-[9px] font-bold opacity-70">
+                          {edgeTransportLabel(edge.transportType)} · {[segment?.distanceText || edge.distance, segment?.durationText || edge.duration].filter(Boolean).join(' · ') || '待计算'}
+                          {edge.isLocked ? ' · 已锁定' : ''}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
             <div>
-              <h3 className="text-sm font-black text-slate-900">{editingId ? '编辑项目' : '项目录入'}</h3>
+              <h3 className="text-sm font-black text-slate-900">{editingEdge ? '路段设置' : editingId ? '编辑项目' : '项目录入'}</h3>
               <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
-                {form.type === 'transport'
+                {editingEdge
+                  ? `${editingEdgeSource?.title || '起点'} → ${editingEdgeTarget?.title || '终点'}`
+                  : form.type === 'transport'
                   ? `交通 · D${form.day || currentDay} · ${form.date || currentDate} · ${form.time || '12:00'}`
                   : isScheduledNode({ id: editingId || 'draft', ...form })
                     ? `地点 · 已排期 D${form.day} · ${form.date} · ${form.time}`
@@ -2200,21 +2335,101 @@ export default function AdminView() {
               </p>
             </div>
             <div className="flex items-center gap-1">
-              <button type="button" onClick={() => startNew('point')} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[10px] font-black text-slate-600 shadow-sm transition hover:border-indigo-200 hover:text-indigo-700">
-                <Plus className="mr-1 inline h-3 w-3" />地点
-              </button>
-              <button type="button" onClick={() => startNew('transport')} className="rounded-lg border border-sky-100 bg-sky-50 px-2 py-1.5 text-[10px] font-black text-sky-700 shadow-sm transition hover:bg-sky-100">
-                <Plus className="mr-1 inline h-3 w-3" />交通
-              </button>
-              {editingExistingTransport && (
-                <button type="button" onClick={deleteEditingTransport} className="rounded-lg border border-red-100 bg-red-50 px-2 py-1.5 text-[10px] font-black text-red-600 shadow-sm transition hover:bg-red-100">
-                  <Trash2 className="mr-1 inline h-3 w-3" />删除
-                </button>
+              {editingEdge ? (
+                <>
+                  <button type="button" onClick={followAutoRoute} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[10px] font-black text-slate-600 shadow-sm transition hover:border-indigo-200 hover:text-indigo-700">
+                    自动
+                  </button>
+                  <button type="button" onClick={() => setActiveEdgeId(null)} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-red-600 hover:bg-red-50">取消</button>
+                </>
+              ) : (
+                <>
+                  <button type="button" onClick={() => startNew('point')} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[10px] font-black text-slate-600 shadow-sm transition hover:border-indigo-200 hover:text-indigo-700">
+                    <Plus className="mr-1 inline h-3 w-3" />地点
+                  </button>
+                  <button type="button" onClick={() => startNew('transport')} className="rounded-lg border border-sky-100 bg-sky-50 px-2 py-1.5 text-[10px] font-black text-sky-700 shadow-sm transition hover:bg-sky-100">
+                    <Plus className="mr-1 inline h-3 w-3" />交通
+                  </button>
+                  {editingExistingTransport && (
+                    <button type="button" onClick={deleteEditingTransport} className="rounded-lg border border-red-100 bg-red-50 px-2 py-1.5 text-[10px] font-black text-red-600 shadow-sm transition hover:bg-red-100">
+                      <Trash2 className="mr-1 inline h-3 w-3" />删除
+                    </button>
+                  )}
+                  {editingId && <button type="button" onClick={() => reset()} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-red-600 hover:bg-red-50">取消</button>}
+                </>
               )}
-              {editingId && <button type="button" onClick={() => reset()} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-red-600 hover:bg-red-50">取消</button>}
             </div>
           </div>
 
+          {editingEdge ? (
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-rose-100 bg-rose-50/70 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-black text-rose-700">地点接续路线</div>
+                    <div className="mt-1 truncate text-xs font-black text-slate-900">{editingEdgeSource?.title || '起点'}</div>
+                    <div className="mt-0.5 truncate text-[10px] font-bold text-slate-500">→ {editingEdgeTarget?.title || '终点'}</div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="text-[10px] font-black text-slate-500">{edgeTransportLabel(edgeDraft.transportType)}</div>
+                    <div className="mt-1 text-[10px] font-bold text-rose-700">
+                      {[editingRouteSegment?.distanceText || editingEdge.distance, editingRouteSegment?.durationText || editingEdge.duration].filter(Boolean).join(' · ') || '待计算'}
+                    </div>
+                  </div>
+                </div>
+                {editingRouteSegment?.status === 'failed' && (
+                  <div className="mt-2 rounded-xl border border-amber-100 bg-white/80 px-3 py-2 text-[10px] font-bold text-amber-700">
+                    真实路线暂不可用，地图已回退为直线/大圆线。
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                {edgeTransportOptions.map(({ value, label, hint, icon: Icon }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setEdgeDraft((current) => ({ ...current, transportType: value, isLocked: true }))}
+                    className={`rounded-xl border px-2.5 py-2 text-left transition ${edgeDraft.transportType === value ? 'border-rose-200 bg-rose-50 text-rose-700 shadow-sm' : 'border-slate-200 bg-white/75 text-slate-500 hover:bg-white'}`}
+                  >
+                    <span className="flex items-center gap-1.5 text-[11px] font-black">
+                      <Icon className="h-3.5 w-3.5" />{label}
+                    </span>
+                    <span className="mt-0.5 block text-[9px] font-bold opacity-65">{hint}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEdgeDraft((current) => ({ ...current, displayStatus: current.displayStatus === 'hidden' ? 'visible' : 'hidden' }))}
+                  className={`rounded-xl border px-3 py-2 text-left transition ${edgeDraft.displayStatus === 'hidden' ? 'border-slate-200 bg-slate-100 text-slate-500' : 'border-emerald-100 bg-emerald-50 text-emerald-700'}`}
+                >
+                  <span className="flex items-center gap-1.5 text-[11px] font-black">
+                    {edgeDraft.displayStatus === 'hidden' ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    {edgeDraft.displayStatus === 'hidden' ? '地图隐藏' : '地图显示'}
+                  </span>
+                  <span className="mt-0.5 block text-[9px] font-bold opacity-65">不删除路段关系</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEdgeDraft((current) => ({ ...current, isLocked: !current.isLocked }))}
+                  className={`rounded-xl border px-3 py-2 text-left transition ${edgeDraft.isLocked ? 'border-indigo-100 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white/75 text-slate-500'}`}
+                >
+                  <span className="flex items-center gap-1.5 text-[11px] font-black">
+                    <LockKeyhole className="h-3.5 w-3.5" />{edgeDraft.isLocked ? '锁定选择' : '跟随自动'}
+                  </span>
+                  <span className="mt-0.5 block text-[9px] font-bold opacity-65">{edgeDraft.isLocked ? '重建路线不覆盖' : '重建时可覆盖'}</span>
+                </button>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white/75 px-3 py-2 text-[10px] font-bold text-slate-500">
+                保存后会重新计算这一段的实际路线、距离和时间。
+              </div>
+            </div>
+          ) : (
+          <>
           <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
             <button type="button" disabled={editingExistingTransport} onClick={() => switchEditorMode('point')} className={`rounded-lg py-2 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50 ${form.type !== 'transport' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60'}`}>
               <MapPin className="mr-1 inline h-3.5 w-3.5" />地点项目
@@ -2566,10 +2781,12 @@ export default function AdminView() {
             说明
             <textarea rows={3} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} className={inputClass} />
           </label>
+          </>
+          )}
 
           <button disabled={saving || editingExistingTransport} className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 py-3 text-xs font-semibold text-white disabled:opacity-50">
             {saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            {editingExistingTransport ? '删除后重新录入' : editingId ? '保存修改' : '新增内容'}
+            {editingEdge ? '保存路段设置' : editingExistingTransport ? '删除后重新录入' : editingId ? '保存修改' : '新增内容'}
           </button>
         </form>
       </div>

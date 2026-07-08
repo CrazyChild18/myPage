@@ -4,11 +4,11 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Polyline, Popup, Tooltip, ZoomControl, useMap } from 'react-leaflet';
+import { CircleMarker, MapContainer, TileLayer, Marker, Polyline, Popup, Tooltip, ZoomControl, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import ImagePreviewModal from '../ImagePreviewModal/ImagePreviewModal';
 import { useItineraryStore } from '../../store/useItineraryStore';
-import { ItineraryNode, ItineraryEdge, TripSummary } from '../../types';
+import { ItineraryNode, ItineraryEdge, RouteSegment, TripSummary } from '../../types';
 import { isScheduledNode } from '../../utils/itinerary';
 import { Plane, Car, Train, Navigation, Compass } from 'lucide-react';
 import { toProviderPoint } from '../../map/coordinates';
@@ -230,20 +230,150 @@ const transportPath = (node: ItineraryNode): [number, number][] => {
   return greatCirclePath(node.departure_lat, node.departure_lng, node.arrival_lat, endLng);
 };
 
+const cleanGeometry = (segment?: RouteSegment | null, includeProviderGeometry = false): [number, number][] => {
+  if (!segment || (segment.coordSystem === 'gcj02' && !includeProviderGeometry)) return [];
+  return (segment.geometry || [])
+    .filter((point): point is [number, number] =>
+      Array.isArray(point) &&
+      point.length >= 2 &&
+      Number.isFinite(point[0]) &&
+      Number.isFinite(point[1])
+    );
+};
+
+const routeSegmentKey = (linkType: RouteSegment['linkType'], linkId: string) => `${linkType}:${linkId}`;
+
+const routeSegmentFor = (segments: RouteSegment[], linkType: RouteSegment['linkType'], linkId: string) =>
+  segments.find((segment) => segment.linkType === linkType && segment.linkId === linkId);
+
+const routePathForTransport = (node: ItineraryNode, segment?: RouteSegment | null, includeProviderGeometry = false): [number, number][] => {
+  const geometry = cleanGeometry(segment, includeProviderGeometry);
+  return geometry.length >= 2 ? geometry : transportPath(node);
+};
+
+const routePathForEdge = (edge: ItineraryEdge, nodes: ItineraryNode[], segment?: RouteSegment | null, includeProviderGeometry = false): [number, number][] => {
+  const geometry = cleanGeometry(segment, includeProviderGeometry);
+  if (geometry.length >= 2) return geometry;
+  const srcNode = nodes.find(n => n.id === edge.source);
+  const tarNode = nodes.find(n => n.id === edge.target);
+  if (!srcNode || !tarNode) return [];
+  return [[srcNode.lat, srcNode.lng], [tarNode.lat, tarNode.lng]];
+};
+
+const pathMidpoint = (path: [number, number][]): [number, number] => path[Math.floor(path.length / 2)] || [0, 0];
+const ROUTE_HALO_COLOR = '#ffffff';
+const EDGE_ROUTE_COLOR = '#e11d48';
+const EDGE_ROUTE_HOVER_COLOR = '#be123c';
+const FALLBACK_ROUTE_COLOR = '#f59e0b';
+
 const transportLineStyle = (node: ItineraryNode, selected: boolean): L.PolylineOptions => {
   const air = isAirTransport(node);
   const railway = node.transport_mode === 'train' || node.transport_mode === 'high_speed_rail' || node.transport_mode === 'subway';
   const ground = node.transport_mode === 'car' || node.transport_mode === 'bus';
-  const color = air ? '#2563eb' : railway ? '#10b981' : ground ? '#0284c7' : '#0ea5e9';
+  const color = air ? '#1d4ed8' : railway ? '#059669' : ground ? '#db2777' : '#7c3aed';
   return {
     color,
-    weight: selected ? 4.2 : air ? 2.8 : 3,
-    opacity: selected ? 1 : air ? 0.82 : 0.72,
-    dashArray: selected ? undefined : air ? '10, 10' : '6, 8',
+    weight: selected ? 5.2 : air ? 3.4 : 4,
+    opacity: selected ? 1 : air ? 0.9 : 0.88,
+    dashArray: selected ? undefined : air ? '12, 10' : undefined,
     lineCap: 'round',
     lineJoin: 'round',
   };
 };
+
+const routeHaloStyle = (weight: number, opacity = 0.92): L.PolylineOptions => ({
+  color: ROUTE_HALO_COLOR,
+  weight,
+  opacity,
+  lineCap: 'round',
+  lineJoin: 'round',
+});
+
+const edgeColorByType = (type?: string) => {
+  switch (type) {
+    case 'walk': return '#f97316';
+    case 'car': return '#e11d48';
+    case 'taxi': return '#d946ef';
+    case 'transit':
+    case 'bus':
+    case 'subway':
+    case 'train':
+    case 'high_speed_rail':
+      return '#059669';
+    case 'ferry': return '#2563eb';
+    default: return EDGE_ROUTE_COLOR;
+  }
+};
+
+const edgeLineStyle = (edge: ItineraryEdge, segment: RouteSegment | undefined, hovered: boolean, selected = false): L.PolylineOptions => {
+  const failed = segment?.status === 'failed';
+  const baseColor = edgeColorByType(edge.transportType);
+  return {
+    color: failed ? FALLBACK_ROUTE_COLOR : hovered || selected ? EDGE_ROUTE_HOVER_COLOR : baseColor,
+    weight: selected ? 5.6 : hovered ? 5 : 3.8,
+    opacity: failed ? 0.82 : 0.94,
+    dashArray: failed ? '8, 8' : undefined,
+    lineCap: 'round',
+    lineJoin: 'round',
+  };
+};
+
+const routeHoverMarkerStyle = (color: string) => ({
+  color: ROUTE_HALO_COLOR,
+  weight: 3,
+  fillColor: color,
+  fillOpacity: 1,
+  opacity: 1,
+});
+
+const edgeTransportLabel = (type?: string) => {
+  switch (type) {
+    case 'walk': return '步行';
+    case 'car': return '驾车';
+    case 'taxi': return '打车';
+    case 'transit': return '公共交通';
+    case 'bus': return '公交';
+    case 'subway': return '地铁';
+    case 'train': return '铁路';
+    case 'high_speed_rail': return '高铁';
+    case 'ferry': return '轮渡';
+    default: return '接续';
+  }
+};
+
+const transportModeLabel = (route: ItineraryNode) => {
+  if (route.transport_mode === 'flight') return '航班';
+  if (route.transport_mode === 'high_speed_rail') return '高铁';
+  if (route.transport_mode === 'train') return '火车';
+  if (route.transport_mode === 'subway') return '地铁';
+  if (route.transport_mode === 'bus') return '巴士';
+  if (route.transport_mode === 'car') return '驾车';
+  if (route.transport_mode === 'ferry') return '轮渡';
+  return '交通';
+};
+
+const transportRouteLabel = (route: ItineraryNode, segment?: RouteSegment) => ({
+  title: route.service_number || transportModeLabel(route),
+  subtitle: `${route.departure_place || '出发地'} → ${route.arrival_place || '到达地'}`,
+  metric: [segment?.distanceText, segment?.durationText || route.duration].filter(Boolean).join(' · '),
+  warning: segment?.status === 'failed' ? '真实路线暂不可用，已回退直线' : '',
+});
+
+const edgeRouteLabel = (edge: ItineraryEdge, segment?: RouteSegment) => ({
+  title: edgeTransportLabel(edge.transportType),
+  subtitle: '地点接续路线',
+  metric: [segment?.distanceText || edge.distance, segment?.durationText || edge.duration].filter(Boolean).join(' · '),
+  warning: segment?.status === 'failed' ? '真实路线暂不可用，已回退直线' : '',
+});
+
+const routeLabelHtml = ({ title, subtitle, metric, warning }: { title: string; subtitle: string; metric?: string; warning?: string }) => `
+  <div style="min-width:150px;font-family:Inter,system-ui,sans-serif;padding:2px 0">
+    <div style="font-size:11px;font-weight:900;color:#0f172a;line-height:1.25">${title}</div>
+    <div style="margin-top:4px;font-size:10px;font-weight:700;color:#475569;line-height:1.3">${subtitle}</div>
+    ${metric ? `<div style="margin-top:5px;font-size:10px;font-weight:900;color:#e11d48">${metric}</div>` : ''}
+    ${warning ? `<div style="margin-top:4px;font-size:9px;font-weight:800;color:#b45309">${warning}</div>` : ''}
+  </div>
+`;
 
 const transportIconType = (route: ItineraryNode) => {
   if (route.transport_mode === 'flight') return 'flight';
@@ -286,6 +416,7 @@ function HomeMapController({ trip }: { trip: TripSummary | null }) {
 
 type TransportRouteLayerProps = {
   route: ItineraryNode;
+  routeSegment?: RouteSegment;
   selected: boolean;
   onSelect: () => void;
   renderTransportIcon: (type?: string) => React.ReactNode;
@@ -293,14 +424,17 @@ type TransportRouteLayerProps = {
 
 const TransportRouteLayer: React.FC<TransportRouteLayerProps> = ({
   route,
+  routeSegment,
   selected,
   onSelect,
   renderTransportIcon,
 }) => {
   const lineRef = useRef<L.Polyline>(null);
-  const path = transportPath(route);
-  const midpoint = path[Math.floor(path.length / 2)];
-  const lineStyle = transportLineStyle(route, selected);
+  const [hovered, setHovered] = useState(false);
+  const path = routePathForTransport(route, routeSegment);
+  const midpoint = pathMidpoint(path);
+  const lineStyle = transportLineStyle(route, selected || hovered);
+  const label = transportRouteLabel(route, routeSegment);
 
   useEffect(() => {
     if (selected) lineRef.current?.openPopup();
@@ -311,19 +445,37 @@ const TransportRouteLayer: React.FC<TransportRouteLayerProps> = ({
   return (
     <React.Fragment>
       <Polyline
+        positions={path}
+        pathOptions={routeHaloStyle(Number(lineStyle.weight || 3) + 4)}
+        eventHandlers={{ click: onSelect, mouseover: () => setHovered(true), mouseout: () => setHovered(false) }}
+      />
+      <Polyline
         ref={lineRef}
         positions={path}
         pathOptions={lineStyle}
-        eventHandlers={{ click: onSelect }}
+        eventHandlers={{ click: onSelect, mouseover: () => setHovered(true), mouseout: () => setHovered(false) }}
       >
         <Popup position={midpoint} autoPan={false} closeButton={false} closeOnClick={false}>
           <div className="min-w-48 font-sans">
             <div className="flex items-center gap-1.5 text-xs font-black text-sky-700">{renderTransportIcon(transportIconType(route))}{route.service_number || '区间交通'}</div>
             <div className="mt-2 text-[11px] font-bold text-slate-800">{route.departure_place} → {route.arrival_place}</div>
-            <div className="mt-1 text-[9px] text-slate-500">D{route.day} · {route.time} - {route.arrival_time || '--:--'} · {route.duration || '时长待补充'}</div>
+            <div className="mt-1 text-[9px] text-slate-500">D{route.day} · {route.time} - {route.arrival_time || '--:--'} · {routeSegment?.durationText || route.duration || '时长待补充'}</div>
+            {routeSegment?.status === 'failed' && <div className="mt-1 text-[9px] font-bold text-amber-600">真实路线暂不可用，已回退为直线</div>}
           </div>
         </Popup>
       </Polyline>
+      {hovered && !selected && (
+        <CircleMarker center={midpoint} radius={7} pathOptions={routeHoverMarkerStyle(String(lineStyle.color || '#db2777'))}>
+          <Tooltip direction="top" offset={[0, -10]} opacity={0.98} permanent>
+            <div className="min-w-36 py-0.5 text-[10px] leading-tight">
+              <div className="font-black text-slate-950">{label.title}</div>
+              <div className="mt-0.5 font-bold text-slate-500">{label.subtitle}</div>
+              {label.metric && <div className="mt-1 font-black text-rose-600">{label.metric}</div>}
+              {label.warning && <div className="mt-0.5 font-bold text-amber-600">{label.warning}</div>}
+            </div>
+          </Tooltip>
+        </CircleMarker>
+      )}
       <Marker position={[route.departure_lat!, route.departure_lng!]} icon={transportEndpointIcon(selected)} eventHandlers={{ click: onSelect }} />
       <Marker position={[route.arrival_lat!, route.arrival_lng!]} icon={transportEndpointIcon(selected)} eventHandlers={{ click: onSelect }} />
     </React.Fragment>
@@ -406,9 +558,12 @@ type ProviderMapCanvasProps = {
   visibleNodes: ItineraryNode[];
   visibleTransportRoutes: ItineraryNode[];
   visibleEdges: ItineraryEdge[];
+  routeSegments: RouteSegment[];
   nodes: ItineraryNode[];
   activeNodeId: string | null;
+  activeEdgeId: string | null;
   setActiveNodeId: (id: string | null) => void;
+  setActiveEdgeId: (id: string | null) => void;
   onSelectHomeTrip?: (slug: string) => void;
   onOpenHomeTrip?: (slug: string) => void;
 };
@@ -462,9 +617,12 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   visibleNodes,
   visibleTransportRoutes,
   visibleEdges,
+  routeSegments,
   nodes,
   activeNodeId,
+  activeEdgeId,
   setActiveNodeId,
+  setActiveEdgeId,
   onSelectHomeTrip,
   onOpenHomeTrip,
 }) => {
@@ -472,6 +630,8 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   const mapRef = useRef<any>(null);
   const overlaysRef = useRef<any[]>([]);
   const infoRef = useRef<any>(null);
+  const hoverInfoRef = useRef<any>(null);
+  const hoverOverlaysRef = useRef<any[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -490,8 +650,17 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             gestureHandling: 'greedy',
           });
           infoRef.current = new maps.InfoWindow();
+          hoverInfoRef.current = new maps.InfoWindow();
         }
+        if (!infoRef.current) infoRef.current = new maps.InfoWindow();
+        if (!hoverInfoRef.current) hoverInfoRef.current = new maps.InfoWindow();
 
+        const clearRouteHover = () => {
+          hoverOverlaysRef.current.forEach((overlay) => overlay.setMap?.(null));
+          hoverOverlaysRef.current = [];
+          hoverInfoRef.current?.close();
+        };
+        clearRouteHover();
         overlaysRef.current.forEach((overlay) => overlay.setMap?.(null));
         overlaysRef.current = [];
         const bounds = new maps.LatLngBounds();
@@ -519,17 +688,30 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
           if (selectedHomeTrip) mapRef.current.panTo({ lat: selectedHomeTrip.center_lat, lng: selectedHomeTrip.center_lng });
         } else {
           visibleTransportRoutes.forEach((route) => {
-            const path = transportPath(route).map(googleLatLng);
+            const routeSegment = routeSegmentFor(routeSegments, 'transport_node', route.id);
+            const path = routePathForTransport(route, routeSegment).map(googleLatLng);
             if (path.length < 2) return;
             path.forEach((point) => remember(point.lat, point.lng));
             const selected = activeNodeId === route.id;
             const style = transportLineStyle(route, selected);
+            const hoverStyle = transportLineStyle(route, true);
+            const midpoint = path[Math.floor(path.length / 2)];
+            const label = transportRouteLabel(route, routeSegment);
+            const halo = new maps.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: ROUTE_HALO_COLOR,
+              strokeOpacity: 0.9,
+              strokeWeight: Number(style.weight || 3) + 5,
+              zIndex: 10,
+            });
             const line = new maps.Polyline({
               map: mapRef.current,
               path,
               strokeColor: String(style.color || '#0ea5e9'),
               strokeOpacity: Number(style.opacity || 0.8),
               strokeWeight: Number(style.weight || 3),
+              zIndex: 20,
             });
             line.addListener('click', () => {
               setActiveNodeId(route.id);
@@ -537,21 +719,100 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               infoRef.current.setPosition(path[Math.floor(path.length / 2)]);
               infoRef.current.open(mapRef.current);
             });
+            line.addListener('mouseover', () => {
+              clearRouteHover();
+              line.setOptions({
+                strokeWeight: Number(hoverStyle.weight || 5),
+                strokeOpacity: 1,
+              });
+              const marker = new maps.Marker({
+                map: mapRef.current,
+                position: midpoint,
+                icon: {
+                  path: maps.SymbolPath.CIRCLE,
+                  fillColor: String(style.color || '#db2777'),
+                  fillOpacity: 1,
+                  strokeColor: ROUTE_HALO_COLOR,
+                  strokeWeight: 3,
+                  scale: 7,
+                },
+              });
+              hoverOverlaysRef.current.push(marker);
+              hoverInfoRef.current.setContent(routeLabelHtml(label));
+              hoverInfoRef.current.setPosition(midpoint);
+              hoverInfoRef.current.open(mapRef.current);
+            });
+            line.addListener('mouseout', () => {
+              line.setOptions({
+                strokeWeight: Number(style.weight || 3),
+                strokeOpacity: Number(style.opacity || 0.8),
+              });
+              clearRouteHover();
+            });
+            overlaysRef.current.push(halo);
             overlaysRef.current.push(line);
           });
 
           visibleEdges.forEach((edge) => {
-            const src = nodes.find((node) => node.id === edge.source);
-            const target = nodes.find((node) => node.id === edge.target);
-            if (!src || !target) return;
-            const path = [{ lat: src.lat, lng: src.lng }, { lat: target.lat, lng: target.lng }];
+            const routeSegment = routeSegmentFor(routeSegments, 'edge', edge.id);
+            const path = routePathForEdge(edge, nodes, routeSegment).map(googleLatLng);
+            if (path.length < 2) return;
+            path.forEach((point) => remember(point.lat, point.lng));
+            const selected = activeEdgeId === edge.id;
+            const style = edgeLineStyle(edge, routeSegment, false, selected);
+            const hoverStyle = edgeLineStyle(edge, routeSegment, true, selected);
+            const midpoint = path[Math.floor(path.length / 2)];
+            const label = edgeRouteLabel(edge, routeSegment);
+            const halo = new maps.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: ROUTE_HALO_COLOR,
+              strokeOpacity: 0.9,
+              strokeWeight: Number(style.weight || 3) + 5,
+              zIndex: 8,
+            });
             const line = new maps.Polyline({
               map: mapRef.current,
               path,
-              strokeColor: '#94a3b8',
-              strokeOpacity: 0.6,
-              strokeWeight: 2,
+              strokeColor: String(style.color || EDGE_ROUTE_COLOR),
+              strokeOpacity: Number(style.opacity || 0.9),
+              strokeWeight: Number(style.weight || 3),
+              zIndex: selected ? 24 : 18,
             });
+            line.addListener('click', () => setActiveEdgeId(edge.id));
+            line.addListener('mouseover', () => {
+              clearRouteHover();
+              line.setOptions({
+                strokeColor: String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR),
+                strokeWeight: Number(hoverStyle.weight || 5),
+                strokeOpacity: 1,
+              });
+              const marker = new maps.Marker({
+                map: mapRef.current,
+                position: midpoint,
+                icon: {
+                  path: maps.SymbolPath.CIRCLE,
+                  fillColor: String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR),
+                  fillOpacity: 1,
+                  strokeColor: ROUTE_HALO_COLOR,
+                  strokeWeight: 3,
+                  scale: 7,
+                },
+              });
+              hoverOverlaysRef.current.push(marker);
+              hoverInfoRef.current.setContent(routeLabelHtml(label));
+              hoverInfoRef.current.setPosition(midpoint);
+              hoverInfoRef.current.open(mapRef.current);
+            });
+            line.addListener('mouseout', () => {
+              line.setOptions({
+                strokeColor: String(style.color || EDGE_ROUTE_COLOR),
+                strokeWeight: Number(style.weight || 3),
+                strokeOpacity: Number(style.opacity || 0.9),
+              });
+              clearRouteHover();
+            });
+            overlaysRef.current.push(halo);
             overlaysRef.current.push(line);
           });
 
@@ -587,7 +848,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, selectedHomeTrip, selectedHomeSlug, setActiveNodeId, trips, visibleEdges, visibleNodes, visibleTransportRoutes]);
+  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -612,15 +873,20 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   visibleNodes,
   visibleTransportRoutes,
   visibleEdges,
+  routeSegments,
   nodes,
   activeNodeId,
+  activeEdgeId,
   setActiveNodeId,
+  setActiveEdgeId,
   onSelectHomeTrip,
   onOpenHomeTrip,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const overlaysRef = useRef<any[]>([]);
+  const hoverInfoRef = useRef<any>(null);
+  const hoverOverlaysRef = useRef<any[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -640,6 +906,18 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
           mapRef.current.addControl(new AMap.Scale());
           mapRef.current.addControl(new AMap.ToolBar({ position: 'RB' }));
         }
+        if (!hoverInfoRef.current) {
+          hoverInfoRef.current = new AMap.InfoWindow({
+            isCustom: false,
+            offset: new AMap.Pixel(0, -18),
+          });
+        }
+        const clearRouteHover = () => {
+          hoverOverlaysRef.current.forEach((overlay) => mapRef.current?.remove(overlay));
+          hoverOverlaysRef.current = [];
+          hoverInfoRef.current?.close();
+        };
+        clearRouteHover();
         overlaysRef.current.forEach((overlay) => mapRef.current.remove(overlay));
         overlaysRef.current = [];
         const boundsPoints: [number, number][] = [];
@@ -647,6 +925,10 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
           const [gcjLat, gcjLng] = toProviderPoint(lat, lng, 'amap');
           boundsPoints.push([gcjLng, gcjLat]);
           return [gcjLng, gcjLat] as [number, number];
+        };
+        const rememberProviderPoint = (lat: number, lng: number) => {
+          boundsPoints.push([lng, lat]);
+          return [lng, lat] as [number, number];
         };
 
         if (mode === 'home') {
@@ -666,33 +948,119 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
           });
         } else {
           visibleTransportRoutes.forEach((route) => {
-            const path = transportPath(route).map(([lat, lng]) => remember(lat, lng));
+            const routeSegment = routeSegmentFor(routeSegments, 'transport_node', route.id);
+            const pathPoints = routePathForTransport(route, routeSegment, true);
+            const path = routeSegment?.coordSystem === 'gcj02'
+              ? pathPoints.map(([lat, lng]) => rememberProviderPoint(lat, lng))
+              : pathPoints.map(([lat, lng]) => remember(lat, lng));
             if (path.length < 2) return;
             const selected = activeNodeId === route.id;
             const style = transportLineStyle(route, selected);
+            const hoverStyle = transportLineStyle(route, true);
+            const midpoint = path[Math.floor(path.length / 2)];
+            const label = transportRouteLabel(route, routeSegment);
+            const halo = new AMap.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: ROUTE_HALO_COLOR,
+              strokeOpacity: 0.92,
+              strokeWeight: Number(style.weight || 3) + 5,
+              strokeStyle: 'solid',
+              zIndex: 10,
+            });
             const line = new AMap.Polyline({
               map: mapRef.current,
               path,
               strokeColor: String(style.color || '#0ea5e9'),
               strokeOpacity: Number(style.opacity || 0.8),
               strokeWeight: Number(style.weight || 3),
-              strokeStyle: selected ? 'solid' : 'dashed',
+              strokeStyle: !selected && isAirTransport(route) ? 'dashed' : 'solid',
+              zIndex: 20,
             });
             line.on('click', () => setActiveNodeId(route.id));
+            line.on('mouseover', () => {
+              clearRouteHover();
+              line.setOptions({
+                strokeWeight: Number(hoverStyle.weight || 5),
+                strokeOpacity: 1,
+              });
+              const marker = new AMap.Marker({
+                map: mapRef.current,
+                position: midpoint,
+                content: `<div style="width:16px;height:16px;border-radius:999px;background:${String(style.color || '#db2777')};border:3px solid white;box-shadow:0 8px 18px rgba(15,23,42,.28)"></div>`,
+                offset: new AMap.Pixel(-8, -8),
+              });
+              hoverOverlaysRef.current.push(marker);
+              hoverInfoRef.current.setContent(routeLabelHtml(label));
+              hoverInfoRef.current.open(mapRef.current, midpoint);
+            });
+            line.on('mouseout', () => {
+              line.setOptions({
+                strokeWeight: Number(style.weight || 3),
+                strokeOpacity: Number(style.opacity || 0.8),
+              });
+              clearRouteHover();
+            });
+            overlaysRef.current.push(halo);
             overlaysRef.current.push(line);
           });
           visibleEdges.forEach((edge) => {
-            const src = nodes.find((node) => node.id === edge.source);
-            const target = nodes.find((node) => node.id === edge.target);
-            if (!src || !target) return;
+            const routeSegment = routeSegmentFor(routeSegments, 'edge', edge.id);
+            const pathPoints = routePathForEdge(edge, nodes, routeSegment, true);
+            if (pathPoints.length < 2) return;
+            const path = routeSegment?.coordSystem === 'gcj02'
+              ? pathPoints.map(([lat, lng]) => rememberProviderPoint(lat, lng))
+              : pathPoints.map(([lat, lng]) => remember(lat, lng));
+            const selected = activeEdgeId === edge.id;
+            const style = edgeLineStyle(edge, routeSegment, false, selected);
+            const hoverStyle = edgeLineStyle(edge, routeSegment, true, selected);
+            const midpoint = path[Math.floor(path.length / 2)];
+            const label = edgeRouteLabel(edge, routeSegment);
+            const halo = new AMap.Polyline({
+              map: mapRef.current,
+              path,
+              strokeColor: ROUTE_HALO_COLOR,
+              strokeOpacity: 0.92,
+              strokeWeight: Number(style.weight || 3) + 5,
+              strokeStyle: 'solid',
+              zIndex: 8,
+            });
             const line = new AMap.Polyline({
               map: mapRef.current,
-              path: [remember(src.lat, src.lng), remember(target.lat, target.lng)],
-              strokeColor: '#94a3b8',
-              strokeOpacity: 0.62,
-              strokeWeight: 2,
-              strokeStyle: 'dashed',
+              path,
+              strokeColor: String(style.color || EDGE_ROUTE_COLOR),
+              strokeOpacity: Number(style.opacity || 0.9),
+              strokeWeight: Number(style.weight || 3),
+              strokeStyle: routeSegment?.status === 'failed' ? 'dashed' : 'solid',
+              zIndex: selected ? 24 : 18,
             });
+            line.on('click', () => setActiveEdgeId(edge.id));
+            line.on('mouseover', () => {
+              clearRouteHover();
+              line.setOptions({
+                strokeColor: String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR),
+                strokeWeight: Number(hoverStyle.weight || 5),
+                strokeOpacity: 1,
+              });
+              const marker = new AMap.Marker({
+                map: mapRef.current,
+                position: midpoint,
+                content: `<div style="width:16px;height:16px;border-radius:999px;background:${String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR)};border:3px solid white;box-shadow:0 8px 18px rgba(15,23,42,.28)"></div>`,
+                offset: new AMap.Pixel(-8, -8),
+              });
+              hoverOverlaysRef.current.push(marker);
+              hoverInfoRef.current.setContent(routeLabelHtml(label));
+              hoverInfoRef.current.open(mapRef.current, midpoint);
+            });
+            line.on('mouseout', () => {
+              line.setOptions({
+                strokeColor: String(style.color || EDGE_ROUTE_COLOR),
+                strokeWeight: Number(style.weight || 3),
+                strokeOpacity: Number(style.opacity || 0.9),
+              });
+              clearRouteHover();
+            });
+            overlaysRef.current.push(halo);
             overlaysRef.current.push(line);
           });
           visibleNodes.forEach((node) => {
@@ -715,7 +1083,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, selectedHomeTrip, selectedHomeSlug, setActiveNodeId, trips, visibleEdges, visibleNodes, visibleTransportRoutes]);
+  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -737,14 +1105,18 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     trip,
     nodes, 
     edges, 
+    routeSegments,
     activeNodeId, 
+    activeEdgeId,
     setActiveNodeId, 
+    setActiveEdgeId,
     hoveredEdgeId, 
     setHoveredEdgeId, 
     activeDay 
   } = useItineraryStore();
 
   const [preview, setPreview] = useState<PreviewState>(null);
+  const routeSegmentLookup = new Map(routeSegments.map((segment) => [routeSegmentKey(segment.linkType, segment.linkId), segment]));
 
   // Filter nodes according to current activeDay selector
   const visibleNodes = nodes.filter(n => isScheduledNode(n) && n.type !== 'transport' && (activeDay === 'all' || n.day === activeDay));
@@ -759,14 +1131,14 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
   );
   const fitPoints: [number, number][] = [
     ...visibleNodes.map((node) => [node.lat, node.lng] as [number, number]),
-    ...visibleTransportRoutes.flatMap((node) => [
-      [node.departure_lat!, node.departure_lng!] as [number, number],
-      [node.arrival_lat!, node.arrival_lng!] as [number, number],
-    ]),
+    ...visibleTransportRoutes.flatMap((node) =>
+      routePathForTransport(node, routeSegmentLookup.get(routeSegmentKey('transport_node', node.id)))
+    ),
   ];
 
   // Filter edges where both end-nodes are currently visible/valid
   const visibleEdges = edges.filter(edge => {
+    if (edge.displayStatus === 'hidden') return false;
     const srcExists = visibleNodes.some(n => n.id === edge.source && n.type !== 'transfer');
     const tarExists = visibleNodes.some(n => n.id === edge.target && n.type !== 'transfer');
     return srcExists && tarExists;
@@ -777,17 +1149,15 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     const srcNode = nodes.find(n => n.id === edge.source);
     const tarNode = nodes.find(n => n.id === edge.target);
     if (!srcNode || !tarNode) return null;
+    const routeSegment = routeSegmentLookup.get(routeSegmentKey('edge', edge.id));
+    const positions = routePathForEdge(edge, nodes, routeSegment);
+    if (positions.length < 2) return null;
 
     return {
-      positions: [
-        [srcNode.lat, srcNode.lng] as [number, number],
-        [tarNode.lat, tarNode.lng] as [number, number]
-      ],
-      midpoint: [
-        (srcNode.lat + tarNode.lat) / 2,
-        (srcNode.lng + tarNode.lng) / 2
-      ] as [number, number],
-      meta: edge
+      positions,
+      midpoint: pathMidpoint(positions),
+      meta: edge,
+      routeSegment,
     };
   };
 
@@ -815,9 +1185,12 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     visibleNodes,
     visibleTransportRoutes,
     visibleEdges,
+    routeSegments,
     nodes,
     activeNodeId,
+    activeEdgeId,
     setActiveNodeId,
+    setActiveEdgeId,
     onSelectHomeTrip,
     onOpenHomeTrip,
   };
@@ -854,9 +1227,9 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
       <ProviderMissingFallback provider={activeProvider}>
       
       {mode === 'trip' && <div className="absolute bottom-7 left-[calc(33.333%+2rem)] z-[9999] hidden items-center gap-3 rounded-full border border-white/70 bg-white/80 px-3 py-2 text-[9px] font-bold text-slate-600 shadow-lg backdrop-blur-md md:flex">
-        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-blue-600" /><Plane className="h-3 w-3 text-blue-600" />航班/跨城</span>
-        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-sky-600" /><Car className="h-3 w-3 text-sky-600" />地面交通</span>
-        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-slate-400" />地点接续</span>
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-blue-700" /><Plane className="h-3 w-3 text-blue-700" />航班/跨城</span>
+        <span className="flex items-center gap-1.5"><span className="h-1 w-6 rounded-full bg-pink-600 shadow-[0_0_0_2px_rgba(255,255,255,.9)]" /><Car className="h-3 w-3 text-pink-600" />地面交通</span>
+        <span className="flex items-center gap-1.5"><span className="h-1 w-6 rounded-full bg-rose-600 shadow-[0_0_0_2px_rgba(255,255,255,.9)]" />地点接续</span>
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-sky-500 ring-2 ring-white" />区间端点 / 转机</span>
       </div>}
 
@@ -903,7 +1276,16 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
 
         {mode === 'trip' && visibleTransportRoutes.map((route) => {
           const selected = activeNodeId === route.id;
-          return <TransportRouteLayer key={`transport-route-${route.id}`} route={route} selected={selected} onSelect={() => setActiveNodeId(route.id)} renderTransportIcon={getTransportIcon} />;
+          return (
+            <TransportRouteLayer
+              key={`transport-route-${route.id}`}
+              route={route}
+              routeSegment={routeSegmentLookup.get(routeSegmentKey('transport_node', route.id))}
+              selected={selected}
+              onSelect={() => setActiveNodeId(route.id)}
+              renderTransportIcon={getTransportIcon}
+            />
+          );
         })}
 
         {/* Draw edges (connecting networks) */}
@@ -912,6 +1294,9 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
           if (!data) return null;
 
           const isHovered = hoveredEdgeId === edge.id;
+          const selected = activeEdgeId === edge.id;
+          const edgeStyle = edgeLineStyle(edge, data.routeSegment, isHovered, selected);
+          const label = edgeRouteLabel(edge, data.routeSegment);
           
           return (
             <React.Fragment key={edge.id}>
@@ -924,42 +1309,40 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
                   lineCap: 'round'
                 }}
                 eventHandlers={{
+                  click: () => setActiveEdgeId(edge.id),
                   mouseover: () => setHoveredEdgeId(edge.id),
                   mouseout: () => setHoveredEdgeId(null)
                 }}
+              />
+
+              {/* White halo keeps routes legible on top of native map roads */}
+              <Polyline
+                positions={data.positions}
+                pathOptions={routeHaloStyle(Number(edgeStyle.weight || 3) + 4, 0.88)}
               />
               
               {/* Inner visible line */}
               <Polyline
                 positions={data.positions}
-                pathOptions={{
-                  color: isHovered ? '#2563eb' : '#94a3b8',
-                  weight: isHovered ? 4.5 : 2.5,
-                  dashArray: isHovered ? '0' : '6, 8',
-                  opacity: isHovered ? 1.0 : 0.65,
-                  className: 'transition-all duration-300'
+                pathOptions={edgeStyle}
+                eventHandlers={{
+                  click: () => setActiveEdgeId(edge.id),
+                  mouseover: () => setHoveredEdgeId(edge.id),
+                  mouseout: () => setHoveredEdgeId(null)
                 }}
               />
-              
-              {/* Tooltip Popup on Edge Click or Hover */}
-              {isHovered && (
-                <Popup position={data.midpoint} closeButton={false} autoPan={false}>
-                  <div className="px-1 text-center font-sans">
-                    <div className="text-xs font-bold text-slate-800 flex items-center justify-center">
-                      {getTransportIcon(edge.transportType)}
-                      {edge.transportType === 'walk' ? '步行' : 
-                       edge.transportType === 'car' ? '打车/驾车' : 
-                       edge.transportType === 'train' ? '地铁/铁路' : 
-                       edge.transportType === 'flight' ? '航空飞行' : '接驳'}
+
+              {(isHovered || selected) && (
+                <CircleMarker center={data.midpoint} radius={7} pathOptions={routeHoverMarkerStyle(String(edgeStyle.color || EDGE_ROUTE_HOVER_COLOR))}>
+                  <Tooltip direction="top" offset={[0, -10]} opacity={0.98} permanent>
+                    <div className="min-w-32 py-0.5 text-[10px] leading-tight">
+                      <div className="font-black text-slate-950">{label.title}</div>
+                      <div className="mt-0.5 font-bold text-slate-500">{label.subtitle}</div>
+                      {label.metric && <div className="mt-1 font-black text-rose-600">{label.metric}</div>}
+                      {label.warning && <div className="mt-0.5 font-bold text-amber-600">{label.warning}</div>}
                     </div>
-                    {(edge.distance || edge.duration) && (
-                      <div className="text-[10px] text-slate-500 mt-0.5">
-                        {edge.distance && <span className="mr-1.5 font-medium">{edge.distance}</span>}
-                        {edge.duration && <span className="text-indigo-600 font-semibold">{edge.duration}</span>}
-                      </div>
-                    )}
-                  </div>
-                </Popup>
+                  </Tooltip>
+                </CircleMarker>
               )}
             </React.Fragment>
           );

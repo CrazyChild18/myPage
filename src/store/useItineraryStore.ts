@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { ItineraryEdge, ItineraryNode, Trip, TripResponse } from '../types';
+import { ItineraryEdge, ItineraryNode, RouteSegment, Trip, TripResponse } from '../types';
 import { compareItineraryNodes, isScheduledNode } from '../utils/itinerary';
 
 interface ItineraryState {
@@ -7,7 +7,9 @@ interface ItineraryState {
   trip: Trip | null;
   nodes: ItineraryNode[];
   edges: ItineraryEdge[];
+  routeSegments: RouteSegment[];
   activeNodeId: string | null;
+  activeEdgeId: string | null;
   hoveredEdgeId: string | null;
   activeDay: number | 'all';
   loading: boolean;
@@ -19,14 +21,16 @@ interface ItineraryState {
   resetTrip: () => Promise<void>;
   addNode: (node: ItineraryNode) => Promise<void>;
   updateNode: (id: string, updatedFields: Partial<ItineraryNode>) => Promise<void>;
+  updateEdge: (id: string, updatedFields: Partial<ItineraryEdge>) => Promise<void>;
   deleteNode: (id: string) => Promise<void>;
   setActiveNodeId: (id: string | null) => void;
+  setActiveEdgeId: (id: string | null) => void;
   setHoveredEdgeId: (id: string | null) => void;
   setActiveDay: (day: number | 'all') => void;
   autoConnectEdges: () => Promise<void>;
 }
 
-const tripOnly = ({ nodes: _nodes, edges: _edges, ...trip }: TripResponse): Trip => trip;
+const tripOnly = ({ nodes: _nodes, edges: _edges, routeSegments: _routeSegments, ...trip }: TripResponse): Trip => trip;
 
 const request = async <T>(url: string, options?: RequestInit): Promise<T> => {
   const response = await fetch(url, {
@@ -46,7 +50,9 @@ const applyTrip = (data: TripResponse) => ({
   trip: tripOnly(data),
   nodes: [...data.nodes].sort(compareItineraryNodes),
   edges: data.edges,
+  routeSegments: data.routeSegments || [],
   activeNodeId: data.nodes.find(isScheduledNode)?.id || data.nodes[0]?.id || null,
+  activeEdgeId: null,
   activeDay: 'all' as const,
   loading: false,
   saving: false,
@@ -58,7 +64,9 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
   trip: null,
   nodes: [],
   edges: [],
+  routeSegments: [],
   activeNodeId: null,
+  activeEdgeId: null,
   hoveredEdgeId: null,
   activeDay: 'all',
   loading: false,
@@ -79,7 +87,9 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
     trip: null,
     nodes: [],
     edges: [],
+    routeSegments: [],
     activeNodeId: null,
+    activeEdgeId: null,
     activeDay: 'all',
     loading: false,
     saving: false,
@@ -110,6 +120,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
       set((state) => ({
         nodes: [...state.nodes, created].sort(compareItineraryNodes),
         activeNodeId: created.id,
+        activeEdgeId: null,
         saving: false,
       }));
     } catch (error) {
@@ -127,6 +138,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
     set((state) => ({
       nodes: state.nodes.map((node) => node.id === id ? optimistic : node)
         .sort(compareItineraryNodes),
+      activeEdgeId: null,
       saving: true,
       error: null,
     }));
@@ -138,6 +150,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
       set((state) => ({
         nodes: state.nodes.map((node) => node.id === id ? updated : node)
           .sort(compareItineraryNodes),
+        activeEdgeId: null,
         saving: false,
       }));
     } catch (error) {
@@ -145,6 +158,41 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
         nodes: state.nodes.map((node) => node.id === id ? current : node),
         saving: false,
         error: error instanceof Error ? error.message : '更新节点失败',
+      }));
+      throw error;
+    }
+  },
+
+  updateEdge: async (id, updatedFields) => {
+    const slug = get().selectedTripSlug;
+    if (!slug) return;
+    const current = get().edges.find((edge) => edge.id === id);
+    if (!current) return;
+    const optimistic = { ...current, ...updatedFields };
+    set((state) => ({
+      edges: state.edges.map((edge) => edge.id === id ? optimistic : edge),
+      activeEdgeId: id,
+      activeNodeId: null,
+      saving: true,
+      error: null,
+    }));
+    try {
+      const data = await request<TripResponse>(`/api/trips/${slug}/edges/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(updatedFields),
+      });
+      set({
+        edges: data.edges,
+        routeSegments: data.routeSegments || [],
+        activeEdgeId: id,
+        activeNodeId: null,
+        saving: false,
+      });
+    } catch (error) {
+      set((state) => ({
+        edges: state.edges.map((edge) => edge.id === id ? current : edge),
+        saving: false,
+        error: error instanceof Error ? error.message : '更新路段失败',
       }));
       throw error;
     }
@@ -161,7 +209,15 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
         return {
           nodes,
           edges: state.edges.filter((edge) => edge.source !== id && edge.target !== id),
+          routeSegments: state.routeSegments.filter((segment) => {
+            if (segment.linkType === 'transport_node') return segment.linkId !== id;
+            const edge = state.edges.find((item) => item.id === segment.linkId);
+            return edge && edge.source !== id && edge.target !== id;
+          }),
           activeNodeId: state.activeNodeId === id ? nodes[0]?.id || null : state.activeNodeId,
+          activeEdgeId: state.activeEdgeId && state.edges.some((edge) => edge.id === state.activeEdgeId && (edge.source === id || edge.target === id))
+            ? null
+            : state.activeEdgeId,
           saving: false,
         };
       });
@@ -171,11 +227,12 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
     }
   },
 
-  setActiveNodeId: (id) => set({ activeNodeId: id }),
+  setActiveNodeId: (id) => set({ activeNodeId: id, activeEdgeId: null }),
+  setActiveEdgeId: (id) => set({ activeEdgeId: id, activeNodeId: null }),
   setHoveredEdgeId: (id) => set({ hoveredEdgeId: id }),
   setActiveDay: (day) => set((state) => {
     const firstNode = state.nodes.find((node) => isScheduledNode(node) && (day === 'all' || node.day === day));
-    return { activeDay: day, activeNodeId: firstNode?.id || state.activeNodeId };
+    return { activeDay: day, activeNodeId: firstNode?.id || state.activeNodeId, activeEdgeId: null };
   }),
 
   autoConnectEdges: async () => {
@@ -184,7 +241,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
     set({ saving: true, error: null });
     try {
       const data = await request<TripResponse>(`/api/trips/${slug}/auto-connect`, { method: 'POST' });
-      set({ edges: data.edges, saving: false });
+      set({ edges: data.edges, routeSegments: data.routeSegments || [], saving: false });
     } catch (error) {
       set({ saving: false, error: error instanceof Error ? error.message : '重建路线失败' });
       throw error;

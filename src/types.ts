@@ -5,6 +5,9 @@
 
 export type ItineraryType = 'transport' | 'transfer' | 'hotel' | 'restaurant' | 'sightseeing' | 'leisure' | 'shopping';
 export type TransportMode = 'flight' | 'high_speed_rail' | 'train' | 'car' | 'bus' | 'subway' | 'ferry' | 'other';
+export type EdgeTransportType = 'walk' | 'car' | 'taxi' | 'transit' | 'bus' | 'subway' | 'train' | 'high_speed_rail' | 'ferry' | 'other';
+export type EdgeRoutePreference = 'recommended' | 'fastest' | 'shortest' | 'avoid_tolls' | 'avoid_highways';
+export type EdgeDisplayStatus = 'visible' | 'hidden';
 export type TripRegion = 'domestic' | 'overseas';
 export type MapProvider = 'amap' | 'google';
 export type CoordinateSystem = 'gcj02' | 'wgs84';
@@ -55,9 +58,36 @@ export interface ItineraryEdge {
   id: string;
   source: string; // Node ID
   target: string; // Node ID
-  transportType?: 'walk' | 'car' | 'train' | 'flight' | 'other';
+  transportType?: EdgeTransportType;
+  routePreference?: EdgeRoutePreference;
+  isManual?: boolean;
+  isLocked?: boolean;
+  displayStatus?: EdgeDisplayStatus;
   duration?: string; // e.g., "30 mins"
   distance?: string; // e.g., "5.4 km"
+}
+
+export interface RouteSegment {
+  id: string;
+  linkType: 'edge' | 'transport_node';
+  linkId: string;
+  provider: 'google' | 'amap' | 'manual';
+  travelMode: 'drive' | 'walk' | 'transit' | 'flight' | 'other';
+  origin_lat: number;
+  origin_lng: number;
+  destination_lat: number;
+  destination_lng: number;
+  geometryFormat: 'latlng_json' | 'great_circle';
+  geometry: [number, number][];
+  coordSystem: CoordinateSystem;
+  distanceMeters?: number | null;
+  durationSeconds?: number | null;
+  distanceText?: string;
+  durationText?: string;
+  status: 'fresh' | 'fallback' | 'failed';
+  expiresAt?: number;
+  errorMessage?: string;
+  requestedAt?: number;
 }
 
 export interface Accommodation {
@@ -97,4 +127,5 @@ export interface TripSummary extends Trip {
 export interface TripResponse extends Trip {
   nodes: ItineraryNode[];
   edges: ItineraryEdge[];
+  routeSegments?: RouteSegment[];
 }

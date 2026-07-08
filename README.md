@@ -27,7 +27,7 @@ DATABASE_PATH=backend/voyageplanner.db
 AMAP_WEB_SERVICE_KEY=              # 后端高德 POI / 逆地址解析
 VITE_AMAP_JS_API_KEY=              # 前端高德地图 JS
 VITE_AMAP_SECURITY_CODE=           # 高德安全密钥，如控制台要求
-GOOGLE_MAPS_API_KEY=               # 后端 Google Places / Geocoding
+GOOGLE_MAPS_API_KEY=               # 后端 Google Places / Geocoding / Routes
 VITE_GOOGLE_MAPS_BROWSER_KEY=      # 前端 Google Maps JS
 OVERSEAS_GEOCODE_PROVIDER=google
 HTTP_PROXY=                        # 服务器无法直连 Google / GitHub 时填写
@@ -209,6 +209,7 @@ git pull --ff-only origin main
 - `POST /api/trips/iceland-2026/nodes`
 - `PUT /api/trips/iceland-2026/nodes/:id`
 - `DELETE /api/trips/iceland-2026/nodes/:id`
+- `PUT /api/trips/iceland-2026/edges/:id`
 - `POST /api/trips/iceland-2026/auto-connect`
 - `POST /api/trips/iceland-2026/reset`
 
