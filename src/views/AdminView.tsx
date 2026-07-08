@@ -966,6 +966,22 @@ export default function AdminView() {
   );
   const editingLodging = editingLodgingId ? lodgings.find((lodging) => lodging.id === editingLodgingId) || null : null;
   const editingStay = editingStayId ? stays.find((stay) => stay.id === editingStayId) || null : null;
+  const stayCheckInDate = stayForm.check_in_date || currentDate;
+  const stayCheckOutDate = stayForm.check_out_date && (dateDeltaDays(stayCheckInDate, stayForm.check_out_date) || 0) > 0
+    ? stayForm.check_out_date
+    : addDays(stayCheckInDate, 1);
+  const stayCheckInDay = dayForDate(stayCheckInDate, dateByDay, trip?.start_date) || stayForm.check_in_day || currentDay;
+  const stayCheckOutDay = Math.max(
+    stayCheckInDay,
+    dayForDate(stayCheckOutDate, dateByDay, trip?.start_date) || stayForm.check_out_day || stayCheckInDay + 1,
+  );
+  const displayedStayForm: Stay = {
+    ...stayForm,
+    check_in_day: stayCheckInDay,
+    check_in_date: stayCheckInDate,
+    check_out_day: stayCheckOutDay,
+    check_out_date: stayCheckOutDate,
+  };
 
   useEffect(() => {
     if (!editingEdge) return;
@@ -1099,16 +1115,24 @@ export default function AdminView() {
   const canDropToLibrary = Boolean(draggedNode && draggedNode.type !== 'transport' && draggedNode.type !== 'hotel' && isScheduledNode(draggedNode));
   const isPointFormScheduled = isScheduledNode({ id: editingId || 'draft', ...form });
 
-  const formEndDay = (draft = form) =>
-    draft.end_day || dayForDate(draft.end_date, dateByDay, trip?.start_date) || draft.day || currentDay;
+  const formStartDay = (draft = form) =>
+    dayForDate(draft.date || currentDate, dateByDay, trip?.start_date) || draft.day || currentDay;
+
+  const formEndDay = (draft = form) => {
+    const startDay = formStartDay(draft);
+    const endDate = draft.end_date || draft.arrival_date || draft.date || currentDate;
+    return Math.max(startDay, dayForDate(endDate, dateByDay, trip?.start_date) || draft.end_day || startDay);
+  };
 
   const formRangeDuration = (draft = form) => {
     const parsed = parseDurationMinutes(draft.duration);
-    if (!isScheduledNode({ id: editingId || 'draft', ...draft })) {
+    const startDay = formStartDay(draft);
+    const scheduledDraft = { id: editingId || 'draft', ...draft, day: startDay };
+    if (!isScheduledNode(scheduledDraft)) {
       return Math.max(SLOT_MINUTES, parsed || defaultDurationForNode(draft) || SLOT_MINUTES);
     }
     return durationBetweenRange(
-      draft.day || currentDay,
+      startDay,
       draft.time || '12:00',
       formEndDay(draft),
       draft.end_time || draft.time || '12:00',
@@ -1117,8 +1141,8 @@ export default function AdminView() {
 
   const schedulePointForm = (time = form.time || '12:00') => {
     setForm((current) => {
-      const day = current.day > 0 ? current.day : currentDay;
-      const date = current.date || dateByDay.get(day) || currentDate;
+      const date = current.date || currentDate;
+      const day = dayForDate(date, dateByDay, trip?.start_date) || current.day || currentDay;
       const duration = formRangeDuration({ ...current, day, date, time, status: 'planned' });
       return {
         ...current,
@@ -1135,8 +1159,8 @@ export default function AdminView() {
   const updatePointStart = (patch: Partial<Pick<ItineraryNode, 'day' | 'date' | 'time'>>) => {
     setForm((current) => {
       const duration = formRangeDuration(current);
-      const nextDay = patch.day || (patch.date ? dayForDate(patch.date, dateByDay, trip?.start_date) || current.day || currentDay : current.day || currentDay);
       const nextDate = patch.date || (patch.day ? dateByDay.get(patch.day) || current.date || currentDate : current.date || currentDate);
+      const nextDay = dayForDate(nextDate, dateByDay, trip?.start_date) || patch.day || current.day || currentDay;
       const nextTime = patch.time || current.time || '12:00';
       return {
         ...current,
@@ -1153,23 +1177,24 @@ export default function AdminView() {
 
   const updatePointEnd = (patch: Partial<Pick<ItineraryNode, 'end_day' | 'end_date' | 'end_time'>>) => {
     setForm((current) => {
-      const nextEndDay = patch.end_day || (patch.end_date ? dayForDate(patch.end_date, dateByDay, trip?.start_date) || current.end_day || current.day : current.end_day || current.day);
-      const clampedEndDay = Math.max(current.day || currentDay, nextEndDay || current.day || currentDay);
-      const nextEndDate = dateByDay.get(clampedEndDay) || patch.end_date || current.end_date || current.date;
+      const startDay = formStartDay(current);
+      const nextEndDate = patch.end_date || (patch.end_day ? dateByDay.get(patch.end_day) || current.end_date || current.date || currentDate : current.end_date || current.date || currentDate);
+      const nextEndDay = dayForDate(nextEndDate, dateByDay, trip?.start_date) || patch.end_day || current.end_day || startDay;
+      const clampedEndDay = Math.max(startDay, nextEndDay);
       const next = {
         ...current,
         ...patch,
         end_day: clampedEndDay,
-        end_date: nextEndDate || current.date || currentDate,
+        end_date: nextEndDate,
         end_time: patch.end_time || current.end_time || current.time || '12:00',
         status: 'planned' as const,
       };
       const duration = formRangeDuration(next);
-      if (!durationBetweenRange(next.day || currentDay, next.time || '12:00', next.end_day || currentDay, next.end_time || '12:00')) {
+      if (!durationBetweenRange(formStartDay(next), next.time || '12:00', formEndDay(next), next.end_time || '12:00')) {
         return {
           ...next,
           duration: formatDurationText(SLOT_MINUTES),
-          ...endFromStart(next.day || currentDay, next.date || currentDate, next.time || '12:00', SLOT_MINUTES, dateByDay),
+          ...endFromStart(formStartDay(next), next.date || currentDate, next.time || '12:00', SLOT_MINUTES, dateByDay),
         };
       }
       return { ...next, duration: formatDurationText(duration) };
@@ -1179,17 +1204,17 @@ export default function AdminView() {
   const updatePointDuration = (value: string) => {
     setForm((current) => {
       const parsed = parseDurationMinutes(value);
-      if (!parsed || !isScheduledNode({ id: editingId || 'draft', ...current })) {
+      const scheduledDraft = { id: editingId || 'draft', ...current, day: formStartDay(current) };
+      if (!parsed || !isScheduledNode(scheduledDraft)) {
         return { ...current, duration: value };
       }
       return {
         ...current,
         duration: value,
-        ...endFromStart(current.day || currentDay, current.date || currentDate, current.time || '12:00', parsed, dateByDay),
+        ...endFromStart(formStartDay(current), current.date || currentDate, current.time || '12:00', parsed, dateByDay),
       };
     });
   };
-
   const toast = (value: string) => {
     setMessage(value);
     window.setTimeout(() => setMessage(null), 3000);
@@ -1210,11 +1235,11 @@ export default function AdminView() {
 
   const normalizeFormForSubmit = (draft: Omit<ItineraryNode, 'id'>): Omit<ItineraryNode, 'id'> => {
     if (draft.type === 'transport') {
-      const day = draft.day || currentDay;
       const date = draft.date || currentDate;
+      const day = dayForDate(date, dateByDay, trip?.start_date) || draft.day || currentDay;
       const time = draft.time || '12:00';
       const endDate = draft.arrival_date || draft.end_date || date;
-      const endDay = dayForDate(endDate, dateByDay, trip?.start_date) || draft.end_day || day;
+      const endDay = Math.max(day, dayForDate(endDate, dateByDay, trip?.start_date) || draft.end_day || day);
       const endTime = draft.arrival_time || draft.end_time || time;
       const departureTimezone = normaliseTimeZone(draft.departure_timezone || inferTimeZoneFromLocation({
         place: draft.departure_place || draft.title,
@@ -1265,23 +1290,27 @@ export default function AdminView() {
       };
     }
 
-    const scheduled = draft.status !== 'unscheduled' && draft.day > 0 && Boolean(draft.date) && Boolean(draft.time);
-    const fallbackDay = draft.day > 0 ? draft.day : currentDay;
     const fallbackDate = draft.date || currentDate;
+    const fallbackDay = dayForDate(fallbackDate, dateByDay, trip?.start_date) || draft.day || currentDay;
     const fallbackTime = draft.time || '12:00';
-    const explicitEndDay = draft.end_day || dayForDate(draft.end_date, dateByDay, trip?.start_date) || draft.day;
+    const scheduled = draft.status !== 'unscheduled' && Boolean(fallbackDate) && Boolean(fallbackTime);
+    const explicitEndDate = draft.end_date || fallbackDate;
+    const explicitEndDay = Math.max(
+      fallbackDay,
+      dayForDate(explicitEndDate, dateByDay, trip?.start_date) || draft.end_day || fallbackDay,
+    );
     const explicitDuration = scheduled && draft.end_time
-      ? durationBetweenRange(draft.day, draft.time, explicitEndDay, draft.end_time)
+      ? durationBetweenRange(fallbackDay, fallbackTime, explicitEndDay, draft.end_time)
       : null;
-    const durationMinutes = explicitDuration || parseDurationMinutes(draft.duration) || eventDurationMinutes({ id: 'draft', ...draft });
+    const durationMinutes = explicitDuration || parseDurationMinutes(draft.duration) || eventDurationMinutes({ id: 'draft', ...draft, day: fallbackDay, date: fallbackDate, time: fallbackTime });
     const endPatch = scheduled
       ? explicitDuration
         ? {
           end_day: explicitEndDay,
-          end_date: draft.end_date || dateByDay.get(explicitEndDay) || addDays(draft.date, explicitEndDay - draft.day),
+          end_date: explicitEndDate,
           end_time: draft.end_time,
         }
-        : endFromStart(draft.day, draft.date, draft.time, durationMinutes, dateByDay)
+        : endFromStart(fallbackDay, fallbackDate, fallbackTime, durationMinutes, dateByDay)
       : { end_day: 0, end_date: '', end_time: '' };
     return {
       ...draft,
@@ -1296,9 +1325,9 @@ export default function AdminView() {
       place_provider: draft.place_provider || 'manual',
       provider_place_id: draft.provider_place_id || '',
       coord_system: draft.coord_system || 'wgs84',
-      day: scheduled ? draft.day : fallbackDay,
-      date: scheduled ? draft.date : fallbackDate,
-      time: scheduled ? draft.time : fallbackTime,
+      day: fallbackDay,
+      date: fallbackDate,
+      time: fallbackTime,
       ...endPatch,
       duration: scheduled ? formatDurationText(durationMinutes) : draft.duration,
       status: scheduled ? draft.status : 'unscheduled',
@@ -1320,7 +1349,6 @@ export default function AdminView() {
       arrival_provider_place_id: '',
     };
   };
-
   const reset = ({ cleanupPending = true, kind = 'point', time = '12:00', scheduled = false }: { cleanupPending?: boolean; kind?: 'point' | 'transport'; time?: string; scheduled?: boolean } = {}) => {
     if (cleanupPending) cleanupPendingUploads();
     const base = {
@@ -1404,13 +1432,18 @@ export default function AdminView() {
   };
 
   const updateStayCheckOutDate = (date: string) => {
-    setStayForm((current) => ({
-      ...current,
-      check_out_date: date,
-      check_out_day: dayForDate(date, dateByDay, trip?.start_date) || current.check_out_day || current.check_in_day + 1,
-    }));
+    setStayForm((current) => {
+      const checkInDate = current.check_in_date || currentDate;
+      const checkOutDate = (dateDeltaDays(checkInDate, date) || 0) > 0 ? date : addDays(checkInDate, 1);
+      const checkInDay = dayForDate(checkInDate, dateByDay, trip?.start_date) || current.check_in_day || currentDay;
+      const checkOutDay = dayForDate(checkOutDate, dateByDay, trip?.start_date) || checkInDay + 1;
+      return {
+        ...current,
+        check_out_date: checkOutDate,
+        check_out_day: Math.max(checkInDay, checkOutDay),
+      };
+    });
   };
-
   const submitLodgingStay = async (event: React.FormEvent) => {
     event.preventDefault();
     const name = lodgingForm.name.trim();
@@ -1431,16 +1464,9 @@ export default function AdminView() {
         provider_place_id: lodgingForm.provider_place_id || '',
         coord_system: lodgingForm.coord_system || 'wgs84',
       };
-      const checkInDay = dayForDate(stayForm.check_in_date, dateByDay, trip?.start_date) || stayForm.check_in_day || currentDay;
-      const checkOutDay = Math.max(
-        checkInDay,
-        dayForDate(stayForm.check_out_date, dateByDay, trip?.start_date) || stayForm.check_out_day || checkInDay + 1,
-      );
       const stayPayload: Stay = {
-        ...stayForm,
+        ...displayedStayForm,
         lodging_id: lodgingPayload.id,
-        check_in_day: checkInDay,
-        check_out_day: checkOutDay,
         status: stayForm.status || 'planned',
       };
       await saveLodging(lodgingPayload);
@@ -1629,20 +1655,6 @@ export default function AdminView() {
       }
     }
   };
-  const setFormDay = (day: number) => {
-    const nextDate = dateByDay.get(day) || currentDate;
-    setForm((current) => ({
-      ...current,
-      day,
-      date: nextDate,
-      timezone: current.type === 'transport' ? current.timezone : current.timezone || currentDayTimezone,
-      ...(current.type !== 'transport' && isScheduledNode({ id: editingId || 'draft', ...current, day, date: nextDate })
-        ? endFromStart(day, nextDate, current.time, eventDurationMinutes({ id: editingId || 'draft', ...current, day, date: nextDate }), dateByDay)
-        : {}),
-      arrival_date: current.type === 'transport' && (!current.arrival_date || current.arrival_date === current.date) ? nextDate : current.arrival_date,
-    }));
-  };
-
   const pointerOffsetInEventMinutes = (event: React.DragEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     if (!rect.height) return 0;
@@ -2834,11 +2846,11 @@ export default function AdminView() {
                 {editingEdge
                   ? `${editingEdgeSource?.title || '起点'} → ${editingEdgeTarget?.title || '终点'}`
                   : editorMode === 'lodging'
-                  ? `${editingStayId ? '入住区间' : '新增入住'} · D${stayForm.check_in_day || currentDay} ${stayForm.check_in_date || currentDate} → D${stayForm.check_out_day || currentDay + 1} ${stayForm.check_out_date || addDays(currentDate, 1)}`
+                  ? `${editingStayId ? '入住区间' : '新增入住'} · ${stayCheckInDate} ${stayForm.check_in_time || '15:00'} → ${stayCheckOutDate} ${stayForm.check_out_time || '11:00'}`
                   : form.type === 'transport'
-                  ? `交通 · D${form.day || currentDay} · ${form.date || currentDate} · ${form.time || '12:00'}`
+                  ? `交通 · ${form.date || currentDate} · ${form.time || '12:00'}`
                   : isScheduledNode({ id: editingId || 'draft', ...form })
-                    ? `地点 · 已排期 D${form.day} · ${form.date} · ${form.time}`
+                    ? `地点 · 已排期 ${form.date} · ${form.time}`
                     : '地点 · 待排期'}
               </p>
             </div>
@@ -2852,15 +2864,6 @@ export default function AdminView() {
                 </>
               ) : (
                 <>
-                  <button type="button" onClick={() => startNew('point')} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[10px] font-black text-slate-600 shadow-sm transition hover:border-indigo-200 hover:text-indigo-700">
-                    <Plus className="mr-1 inline h-3 w-3" />地点
-                  </button>
-                  <button type="button" onClick={() => startNew('transport')} className="rounded-lg border border-sky-100 bg-sky-50 px-2 py-1.5 text-[10px] font-black text-sky-700 shadow-sm transition hover:bg-sky-100">
-                    <Plus className="mr-1 inline h-3 w-3" />交通
-                  </button>
-                  <button type="button" onClick={startNewLodging} className="rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-1.5 text-[10px] font-black text-emerald-700 shadow-sm transition hover:bg-emerald-100">
-                    <Plus className="mr-1 inline h-3 w-3" />住宿
-                  </button>
                   {editingExistingTransport && (
                     <button type="button" onClick={deleteEditingTransport} className="rounded-lg border border-red-100 bg-red-50 px-2 py-1.5 text-[10px] font-black text-red-600 shadow-sm transition hover:bg-red-100">
                       <Trash2 className="mr-1 inline h-3 w-3" />删除
@@ -2960,7 +2963,7 @@ export default function AdminView() {
                   <div className="min-w-0">
                     <div className="text-[10px] font-black text-emerald-700">入住区间</div>
                     <div className="mt-0.5 truncate text-xs font-bold text-slate-700">
-                      D{stayForm.check_in_day} {stayForm.check_in_time} → D{stayForm.check_out_day} {stayForm.check_out_time} · {stayDurationText(stayForm)}
+                      {stayCheckInDate} {stayForm.check_in_time || '15:00'} → {stayCheckOutDate} {stayForm.check_out_time || '11:00'} · {stayDurationText(displayedStayForm)}
                     </div>
                   </div>
                   {editingStayId && (
@@ -2990,47 +2993,26 @@ export default function AdminView() {
                 </label>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
-                <label className="text-xs font-semibold text-slate-700">
-                  入住 Day
-                  <select value={stayForm.check_in_day || currentDay} onChange={(event) => {
-                    const day = Number(event.target.value);
-                    const date = dateByDay.get(day) || stayForm.check_in_date || currentDate;
-                    setStayForm((current) => ({ ...current, check_in_day: day, check_in_date: date }));
-                  }} className={inputClass}>
-                    {dayNumbers.map((day) => <option key={day} value={day}>D{day}</option>)}
-                  </select>
-                </label>
+              <div className="grid grid-cols-2 gap-2">
                 <label className="text-xs font-semibold text-slate-700">
                   入住日期
-                  <input required type="date" value={stayForm.check_in_date || currentDate} onChange={(event) => updateStayCheckInDate(event.target.value)} className={inputClass} />
+                  <input required type="date" value={stayCheckInDate} onChange={(event) => updateStayCheckInDate(event.target.value)} className={inputClass} />
                 </label>
                 <label className="text-xs font-semibold text-slate-700">
                   入住时间
                   <input required type="time" value={stayForm.check_in_time || '15:00'} onChange={(event) => setStayForm({ ...stayForm, check_in_time: event.target.value })} className={inputClass} />
                 </label>
               </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                <label className="text-xs font-semibold text-slate-700">
-                  退房 Day
-                  <select value={stayForm.check_out_day || currentDay + 1} onChange={(event) => {
-                    const day = Number(event.target.value);
-                    setStayForm((current) => ({ ...current, check_out_day: day, check_out_date: dateByDay.get(day) || current.check_out_date }));
-                  }} className={inputClass}>
-                    {dayNumbers.map((day) => <option key={day} value={day}>D{day}</option>)}
-                  </select>
-                </label>
+              <div className="grid grid-cols-2 gap-2">
                 <label className="text-xs font-semibold text-slate-700">
                   退房日期
-                  <input required type="date" value={stayForm.check_out_date || addDays(currentDate, 1)} onChange={(event) => updateStayCheckOutDate(event.target.value)} className={inputClass} />
+                  <input required type="date" min={stayCheckInDate} value={stayCheckOutDate} onChange={(event) => updateStayCheckOutDate(event.target.value)} className={inputClass} />
                 </label>
                 <label className="text-xs font-semibold text-slate-700">
                   退房时间
                   <input required type="time" value={stayForm.check_out_time || '11:00'} onChange={(event) => setStayForm({ ...stayForm, check_out_time: event.target.value })} className={inputClass} />
                 </label>
               </div>
-
               <div className="grid grid-cols-3 gap-2">
                 <label className="text-xs font-semibold text-slate-700">
                   住客
@@ -3127,34 +3109,40 @@ export default function AdminView() {
                 </div>
               )}
               <div className={editingExistingTransport ? 'pointer-events-none opacity-70' : ''}>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <label className="text-xs font-semibold text-slate-700">
-                  Day
-                  <select value={form.day || currentDay} onChange={(event) => setFormDay(Number(event.target.value))} className={inputClass}>
-                    {dayNumbers.map((day) => <option key={day} value={day}>D{day}</option>)}
-                  </select>
-                </label>
-                <label className="text-xs font-semibold text-slate-700">
-                  日期
+                  出发日期
                   <input
                     required
                     type="date"
                     value={form.date || currentDate}
-                    onChange={(event) => setForm({
-                      ...form,
-                      date: event.target.value,
-                      arrival_date: form.arrival_date || event.target.value,
-                      end_date: form.end_date || form.arrival_date || event.target.value,
-                    })}
+                    onChange={(event) => {
+                      const date = event.target.value;
+                      setForm((current) => {
+                        const day = dayForDate(date, dateByDay, trip?.start_date) || current.day || currentDay;
+                        const arrivalTracksStart = !current.arrival_date || current.arrival_date === current.date;
+                        const arrivalDate = arrivalTracksStart ? date : current.arrival_date;
+                        const endDate = !current.end_date || current.end_date === current.date || arrivalTracksStart
+                          ? arrivalDate || date
+                          : current.end_date;
+                        return {
+                          ...current,
+                          day,
+                          date,
+                          arrival_date: arrivalDate,
+                          end_date: endDate,
+                          end_day: dayForDate(endDate, dateByDay, trip?.start_date) || current.end_day || day,
+                        };
+                      });
+                    }}
                     className={inputClass}
                   />
                 </label>
                 <label className="text-xs font-semibold text-slate-700">
-                  出发
+                  出发时间
                   <input required type="time" value={form.time || '12:00'} onChange={(event) => setForm({ ...form, time: event.target.value })} className={inputClass} />
                 </label>
               </div>
-
               <div className="grid grid-cols-2 gap-2">
                 <label className="text-xs font-semibold text-slate-700">
                   出发时区
@@ -3224,14 +3212,17 @@ export default function AdminView() {
                     value={form.arrival_date || form.date}
                     onChange={(event) => {
                       const endDate = event.target.value;
-                      setForm({
-                        ...form,
-                        arrival_date: endDate,
-                        end_date: endDate,
-                        end_day: dayForDate(endDate, dateByDay, trip?.start_date) || form.end_day || form.day,
+                      setForm((current) => {
+                        const startDay = dayForDate(current.date || currentDate, dateByDay, trip?.start_date) || current.day || currentDay;
+                        const endDay = dayForDate(endDate, dateByDay, trip?.start_date) || current.end_day || startDay;
+                        return {
+                          ...current,
+                          arrival_date: endDate,
+                          end_date: endDate,
+                          end_day: Math.max(startDay, endDay),
+                        };
                       });
-                    }}
-                    className={inputClass}
+                    }}                    className={inputClass}
                   />
                 </label>
                 <label className="text-xs font-semibold text-slate-700">
@@ -3316,7 +3307,7 @@ export default function AdminView() {
                     <div className="min-w-0">
                       <div className="text-[10px] font-black text-indigo-700">时间安排</div>
                       <div className="mt-0.5 truncate text-xs font-bold text-slate-700">
-                        D{form.day} {form.time} - D{formEndDay()} {form.end_time || '--:--'}
+                        {form.date || currentDate} {form.time} - {form.end_date || form.date || currentDate} {form.end_time || '--:--'}
                       </div>
                     </div>
                     {editingId && (
@@ -3326,13 +3317,7 @@ export default function AdminView() {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2">
-                    <label className="text-xs font-semibold text-slate-700">
-                      开始 Day
-                      <select value={form.day || currentDay} onChange={(event) => updatePointStart({ day: Number(event.target.value) })} className={inputClass}>
-                        {dayNumbers.map((day) => <option key={day} value={day}>D{day}</option>)}
-                      </select>
-                    </label>
+                  <div className="grid grid-cols-2 gap-2">
                     <label className="text-xs font-semibold text-slate-700">
                       开始日期
                       <input type="date" value={form.date || currentDate} onChange={(event) => updatePointStart({ date: event.target.value })} className={inputClass} />
@@ -3342,24 +3327,16 @@ export default function AdminView() {
                       <input type="time" value={form.time || '12:00'} onChange={(event) => updatePointStart({ time: event.target.value })} className={inputClass} />
                     </label>
                   </div>
-
-                  <div className="grid grid-cols-3 gap-2">
-                    <label className="text-xs font-semibold text-slate-700">
-                      结束 Day
-                      <select value={formEndDay()} onChange={(event) => updatePointEnd({ end_day: Number(event.target.value) })} className={inputClass}>
-                        {dayNumbers.map((day) => <option key={day} value={day}>D{day}</option>)}
-                      </select>
-                    </label>
+                  <div className="grid grid-cols-2 gap-2">
                     <label className="text-xs font-semibold text-slate-700">
                       结束日期
-                      <input type="date" value={form.end_date || form.date || currentDate} onChange={(event) => updatePointEnd({ end_date: event.target.value })} className={inputClass} />
+                      <input type="date" min={form.date || currentDate} value={form.end_date || form.date || currentDate} onChange={(event) => updatePointEnd({ end_date: event.target.value })} className={inputClass} />
                     </label>
                     <label className="text-xs font-semibold text-slate-700">
                       结束时间
                       <input type="time" value={form.end_time || form.time || '12:00'} onChange={(event) => updatePointEnd({ end_time: event.target.value })} className={inputClass} />
                     </label>
                   </div>
-
                   <label className="block text-xs font-semibold text-slate-700">
                     持续时长
                     <input value={form.duration} onChange={(event) => updatePointDuration(event.target.value)} placeholder="例如：1小时30分" className={inputClass} />
