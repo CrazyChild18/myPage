@@ -642,6 +642,8 @@ type ScheduleDragPreview = {
   durationText: string;
 };
 
+type ImageTarget = 'item' | 'lodging';
+
 type LibraryFilter = 'all' | ActivitySubtype;
 
 const libraryFilterOrder: ActivitySubtype[] = ['sightseeing', 'meal', 'shopping', 'leisure', 'tour', 'layover', 'other'];
@@ -1447,6 +1449,7 @@ export default function AdminView() {
       setEditingStayId(stayPayload.id);
       setLodgingForm(lodgingPayload);
       setStayForm(stayPayload);
+      setPendingUploadUrls([]);
       toast(editingStayId ? `已保存住宿：${name}` : `已安排住宿：${name}`);
     } catch (error) {
       toast(error instanceof Error ? error.message : '住宿保存失败，请检查输入内容');
@@ -1565,7 +1568,22 @@ export default function AdminView() {
     }
   };
 
-  const uploadImage = async (file: File) => {
+  const updateImageUrls = (target: ImageTarget, updater: (images: string[]) => string[]) => {
+    if (target === 'lodging') {
+      setLodgingForm((current) => {
+        const next = updater(current.image_urls || []);
+        return { ...current, image_url: next[0] || '', image_urls: next };
+      });
+      return;
+    }
+
+    setForm((current) => {
+      const next = updater(current.image_urls || []);
+      return { ...current, image_url: next[0] || '', image_urls: next };
+    });
+  };
+
+  const uploadImage = async (file: File, target: ImageTarget = editorMode === 'lodging' ? 'lodging' : 'item') => {
     if (!selectedTripSlug || !file.type.startsWith('image/')) return;
     setUploading(true);
     try {
@@ -1574,7 +1592,7 @@ export default function AdminView() {
       const response = await fetch(`/api/trips/${selectedTripSlug}/images`, { method: 'POST', body: data });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || '图片上传失败');
-      addImageUrl(result.url);
+      addImageUrl(result.url, target);
       setPendingUploadUrls((current) => current.includes(result.url) ? current : [...current, result.url]);
       toast('图片已上传');
     } catch (error) {
@@ -1585,40 +1603,32 @@ export default function AdminView() {
     }
   };
 
-  const addImageUrl = (value = imageUrlInput) => {
+  const addImageUrl = (value = imageUrlInput, target: ImageTarget = editorMode === 'lodging' ? 'lodging' : 'item') => {
     const url = value.trim();
     if (!url) return;
-    setForm((current) => {
-      const images = current.image_urls || [];
-      const next = images.includes(url) ? images : [...images, url];
-      return { ...current, image_url: next[0] || '', image_urls: next };
-    });
+    updateImageUrls(target, (images) => images.includes(url) ? images : [...images, url]);
     setImageUrlInput('');
   };
 
-  const removeImage = (url: string) => {
-    setForm((current) => {
-      const next = (current.image_urls || []).filter((image) => image !== url);
-      return { ...current, image_urls: next, image_url: next[0] || '' };
-    });
+  const removeImage = (url: string, target: ImageTarget = editorMode === 'lodging' ? 'lodging' : 'item') => {
+    updateImageUrls(target, (images) => images.filter((image) => image !== url));
     if (pendingUploadUrls.includes(url)) {
       setPendingUploadUrls((current) => current.filter((image) => image !== url));
       void cleanupUploadedImage(url);
     }
   };
 
-  const pasteImage = async (event: React.ClipboardEvent<HTMLElement>) => {
+  const pasteImage = async (event: React.ClipboardEvent<HTMLElement>, target: ImageTarget = editorMode === 'lodging' ? 'lodging' : 'item') => {
     for (let index = 0; index < event.clipboardData.items.length; index += 1) {
       const item = event.clipboardData.items[index];
       const file = item.kind === 'file' && item.type.startsWith('image/') ? item.getAsFile() : null;
       if (file) {
         event.preventDefault();
-        await uploadImage(file);
+        await uploadImage(file, target);
         break;
       }
     }
   };
-
   const setFormDay = (day: number) => {
     const nextDate = dateByDay.get(day) || currentDate;
     setForm((current) => ({
@@ -3050,6 +3060,41 @@ export default function AdminView() {
               </label>
 
               <LocationPicker provider={mapProvider} value={{ lat: lodgingForm.lat, lng: lodgingForm.lng, city: lodgingForm.city, address: lodgingForm.address, title: lodgingForm.name, place_provider: lodgingForm.place_provider, provider_place_id: lodgingForm.provider_place_id, coord_system: lodgingForm.coord_system }} onChange={(location) => setLodgingForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, name: current.name || location.title || '', place_provider: location.place_provider || current.place_provider || 'manual', provider_place_id: location.provider_place_id || current.provider_place_id || '', coord_system: location.coord_system || current.coord_system || 'wgs84', timezone: inferTimeZoneFromLocation({ place: location.title || current.name, city: location.city, address: location.address, lat: location.lat, lng: location.lng, fallback: current.timezone || currentDayTimezone }) }))} />
+
+              <div tabIndex={0} onPaste={(event) => pasteImage(event, 'lodging')} className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50/40 p-3 outline-none focus:border-emerald-400">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-xs font-black text-emerald-700">
+                    <Image className="h-4 w-4" />住宿图片
+                  </div>
+                  <div className="rounded-full bg-white/80 px-2 py-1 text-[9px] font-bold text-emerald-700">粘贴上传</div>
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {(lodgingForm.image_urls || []).map((url, index) => (
+                    <div key={url} className="group relative">
+                      <img src={url} alt="" className="h-24 w-full rounded-xl object-cover" />
+                      {index === 0 && <span className="absolute bottom-1 left-1 rounded bg-slate-950/70 px-1.5 py-0.5 text-[8px] font-bold text-white">封面</span>}
+                      <button type="button" onClick={() => removeImage(url, 'lodging')} className="absolute right-1 top-1 rounded-full bg-slate-950/70 p-1 text-white opacity-0 transition group-hover:opacity-100"><X className="h-3 w-3" /></button>
+                    </div>
+                  ))}
+                </div>
+                {!(lodgingForm.image_urls || []).length && (
+                  <div className="mt-2 flex min-h-20 flex-col items-center justify-center rounded-xl border border-white/70 bg-white/55 text-center">
+                    <Image className="h-5 w-5 text-emerald-500" />
+                    <div className="mt-1 text-[10px] font-bold text-slate-500">点击后 Ctrl+V 粘贴图片，或从本地上传</div>
+                  </div>
+                )}
+                <div className="mt-3 flex gap-2">
+                  <div className="relative min-w-0 flex-1">
+                    <Image className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input value={imageUrlInput} onChange={(event) => setImageUrlInput(event.target.value)} placeholder="图片 URL" className={`${inputClass} mt-0 pl-9`} />
+                  </div>
+                  <button type="button" onClick={() => addImageUrl(imageUrlInput, 'lodging')} className="rounded-xl border border-emerald-200 bg-white px-3 text-[11px] font-bold text-emerald-700"><Plus className="h-3.5 w-3.5" /></button>
+                  <input ref={fileInputRef} type="file" accept="image/*" onChange={(event) => event.target.files?.[0] && void uploadImage(event.target.files[0], 'lodging')} className="hidden" />
+                  <button type="button" disabled={uploading} onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1 rounded-xl bg-emerald-600 px-3 text-[11px] font-bold text-white disabled:opacity-50">
+                    {uploading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}上传
+                  </button>
+                </div>
+              </div>
 
               <label className="block text-xs font-semibold text-slate-700">
                 住宿备注
