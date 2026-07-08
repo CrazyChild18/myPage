@@ -933,35 +933,33 @@ export default function AdminView() {
       .filter((item): item is { stay: Stay; lodging: Lodging; nightIndex: number; nightCount: number } => Boolean(item)),
     [activeStays, currentDate, lodgingById],
   );
-  const currentStayMarkers = useMemo(
+  const currentLodgingBands = useMemo(
     () => activeStays
       .flatMap((stay) => {
         const lodging = lodgingById.get(stay.lodging_id);
-        if (!lodging) return [];
-        const markers: Array<{ id: string; stay: Stay; lodging: Lodging; kind: 'checkin' | 'checkout'; minutes: number; label: string }> = [];
-        if (stay.check_in_date === currentDate) {
-          markers.push({
-            id: `${stay.id}-checkin`,
-            stay,
-            lodging,
-            kind: 'checkin',
-            minutes: parseTime(stay.check_in_time),
-            label: `${stay.check_in_time} 入住 ${lodging.name}`,
-          });
-        }
-        if (stay.check_out_date === currentDate) {
-          markers.push({
-            id: `${stay.id}-checkout`,
-            stay,
-            lodging,
-            kind: 'checkout',
-            minutes: parseTime(stay.check_out_time),
-            label: `${stay.check_out_time} 退房 ${lodging.name}`,
-          });
-        }
-        return markers;
+        const daysFromCheckIn = dateDeltaDays(stay.check_in_date, currentDate);
+        const daysUntilCheckOut = dateDeltaDays(currentDate, stay.check_out_date);
+        if (!lodging || daysFromCheckIn == null || daysUntilCheckOut == null || daysFromCheckIn < 0 || daysUntilCheckOut < 0) return [];
+
+        const start = stay.check_in_date === currentDate ? parseTime(stay.check_in_time) : START_MINUTES;
+        const end = stay.check_out_date === currentDate ? parseTime(stay.check_out_time) : END_MINUTES;
+        if (end <= start) return [];
+
+        const nightCount = stayNightCount(stay);
+        const nightIndex = Math.max(1, Math.min(nightCount, daysFromCheckIn + 1));
+        return [{
+          id: `${stay.id}-lodging-band`,
+          stay,
+          lodging,
+          start,
+          end,
+          nightIndex,
+          nightCount,
+          displayStart: formatTime(start),
+          displayEnd: end === END_MINUTES ? '24:00' : formatTime(end),
+        }];
       })
-      .sort((a, b) => a.minutes - b.minutes || a.label.localeCompare(b.label, 'zh-CN')),
+      .sort((a, b) => a.start - b.start || a.lodging.name.localeCompare(b.lodging.name, 'zh-CN')),
     [activeStays, currentDate, lodgingById],
   );
   const editingLodging = editingLodgingId ? lodgings.find((lodging) => lodging.id === editingLodgingId) || null : null;
@@ -1036,9 +1034,6 @@ export default function AdminView() {
       .filter((item): item is { id: string; minutes: number; departureTimezone: string; arrivalTimezone: string } => Boolean(item)),
     [currentDay, currentDayTimezone, dateByDay, scheduleEvents, trip?.start_date],
   );
-  const currentDayTimeZoneText = currentDayTimeZoneTransitions.length
-    ? `多时区 · ${currentDayTimeZoneTransitions.map((item) => `${timeZoneOptionLabel(item.departureTimezone)}→${timeZoneOptionLabel(item.arrivalTimezone)}`).join(' · ')}`
-    : `${timeZoneOptionLabel(currentDayTimezone)} ${formatTimeZoneOffset(currentDayTimezone, zonedTimeToUtcMs(currentDate, '12:00', currentDayTimezone))}`;
   const libraryNodes = useMemo(() => sortedNodes.filter((node) => node.type !== 'hotel' && isUnscheduledPointNode(node)), [sortedNodes]);
   const libraryTypeCounts = useMemo(
     () => libraryNodes.reduce<Partial<Record<ActivitySubtype, number>>>((counts, node) => {
@@ -1090,23 +1085,6 @@ export default function AdminView() {
       return lookup;
     }, {}),
     [activeStays],
-  );
-  const currentDayRouteEdges = useMemo(
-    () => edges
-      .filter((edge) => {
-        const source = nodes.find((node) => node.id === edge.source);
-        const target = nodes.find((node) => node.id === edge.target);
-        if (!source || !target || !isScheduledNode(source) || !isScheduledNode(target)) return false;
-        return source.day === currentDay || target.day === currentDay;
-      })
-      .map((edge) => ({
-        edge,
-        source: nodes.find((node) => node.id === edge.source) || null,
-        target: nodes.find((node) => node.id === edge.target) || null,
-        segment: routeSegments.find((segment) => segment.linkType === 'edge' && segment.linkId === edge.id) || null,
-      }))
-      .filter((item) => item.source && item.target) as Array<{ edge: ItineraryEdge; source: ItineraryNode; target: ItineraryNode; segment: typeof routeSegments[number] | null }>,
-    [currentDay, edges, nodes, routeSegments],
   );
   const draggedNode = useMemo(
     () => draggedNodeId ? nodes.find((node) => node.id === draggedNodeId) || null : null,
@@ -2358,7 +2336,6 @@ export default function AdminView() {
           <div className="mb-3 flex shrink-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <h3 className="text-sm font-black text-slate-900">按天时间表</h3>
-              <p className="mt-0.5 text-[10px] font-semibold text-slate-400">D{currentDay} · {formatShortDate(currentDate)} · {currentDayNodes.length} 个项目 · {currentNightStays.length} 个夜宿 · 旅程当地时间 · {currentDayTimeZoneText}</p>
             </div>
             <div className="flex min-w-0 flex-col gap-2">
               <div className="flex max-w-full gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-100/80 p-1">
@@ -2388,32 +2365,32 @@ export default function AdminView() {
           </div>
 
           {currentNightStays.length > 0 && (
-            <div className="mb-3 grid shrink-0 gap-2 md:grid-cols-2">
-              {currentNightStays.map(({ stay, lodging, nightIndex, nightCount }) => (
-                <button
-                  key={stay.id}
-                  type="button"
-                  onClick={() => editStay(stay)}
-                  className={`flex min-w-0 items-center gap-3 rounded-2xl border px-3 py-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:bg-white ${editingStayId === stay.id ? 'border-emerald-300 bg-emerald-50 ring-2 ring-emerald-300/30' : 'border-emerald-100 bg-emerald-50/70'}`}
-                >
-                  <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white text-emerald-700 shadow-sm">
-                    {lodgingImageUrl(lodging) ? (
-                      <img src={lodgingImageUrl(lodging)} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      <BedDouble className="h-5 w-5" />
-                    )}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs font-black text-slate-900">宿：{lodging.name}</span>
-                    <span className="mt-0.5 block truncate text-[10px] font-bold text-emerald-700">
-                      第 {nightIndex} 晚 / 共 {nightCount} 晚 · {lodging.city || lodging.address || '地址待补充'}
+            <div className="mb-3 grid shrink-0 gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {currentNightStays.map(({ stay, lodging, nightIndex, nightCount }) => {
+                const coverUrl = lodgingImageUrl(lodging);
+                return (
+                  <button
+                    key={stay.id}
+                    type="button"
+                    onClick={() => editStay(stay)}
+                    className={`group flex min-w-0 items-center gap-3 overflow-hidden rounded-2xl border bg-gradient-to-br px-3 py-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${editingStayId === stay.id ? 'border-emerald-300 from-emerald-50 to-white ring-2 ring-emerald-300/30' : 'border-emerald-100 from-white to-emerald-50/70 hover:border-emerald-200'}`}
+                  >
+                    <span className="relative flex h-12 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-emerald-100 text-emerald-700 shadow-sm">
+                      {coverUrl ? <img src={coverUrl} alt="" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" /> : <BedDouble className="h-5 w-5" />}
+                      <span className="absolute inset-x-0 bottom-0 bg-slate-950/55 px-1 py-0.5 text-center text-[8px] font-black text-white">N{nightIndex}</span>
                     </span>
-                  </span>
-                </button>
-              ))}
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1 text-[9px] font-black text-emerald-700"><BedDouble className="h-3 w-3" />夜宿 · {stayDurationText(stay)}</span>
+                      <span className="mt-0.5 block truncate text-xs font-black text-slate-900">{lodging.name}</span>
+                      <span className="mt-0.5 block truncate text-[10px] font-bold text-slate-500">
+                        第 {nightIndex} 晚 / 共 {nightCount} 晚 · {lodging.city || lodging.address || '地址待补充'}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
-
           <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white">
             <div
               ref={scheduleGridRef}
@@ -2432,7 +2409,7 @@ export default function AdminView() {
                 <div
                   key={minutes}
                   className="grid border-t border-slate-100 first:border-t-0"
-                  style={{ gridTemplateColumns: '58px minmax(0, 1fr)', height: SLOT_HEIGHT }}
+                  style={{ gridTemplateColumns: '58px 104px minmax(0, 1fr)', height: SLOT_HEIGHT }}
                 >
                   <div className="select-none border-r border-slate-100 pr-2 pt-1 text-right text-[9px] font-bold tabular-nums text-slate-400">
                     {minutes % 60 === 0 ? formatTime(minutes) : ''}
@@ -2440,31 +2417,45 @@ export default function AdminView() {
                   <button
                     type="button"
                     onClick={() => startNew('point', formatTime(minutes), true)}
-                    className="h-full w-full text-left transition hover:bg-indigo-50/45"
+                    className="col-start-3 h-full w-full text-left transition hover:bg-indigo-50/45"
                     aria-label={`${formatTime(minutes)} 拖入地点项目`}
                   />
                 </div>
               ))}
 
-              <div className="pointer-events-none absolute left-[64px] right-3 top-0 z-20">
-                {currentStayMarkers.map((marker) => {
-                  const top = ((marker.minutes - START_MINUTES) / SLOT_MINUTES) * SLOT_HEIGHT + 4;
+              <div className="pointer-events-none absolute left-[58px] top-0 z-20 w-[104px] px-1">
+                {currentLodgingBands.map((band) => {
+                  const top = ((band.start - START_MINUTES) / SLOT_MINUTES) * SLOT_HEIGHT + 2;
+                  const height = Math.max(30, ((band.end - band.start) / SLOT_MINUTES) * SLOT_HEIGHT - 4);
+                  const compact = height < 58;
                   return (
                     <button
-                      key={marker.id}
+                      key={band.id}
                       type="button"
-                      onClick={() => editStay(marker.stay)}
-                      className={`pointer-events-auto absolute flex max-w-[72%] items-center gap-2 rounded-full border bg-white/95 px-3 py-1.5 text-[10px] font-black shadow-md backdrop-blur transition hover:-translate-y-0.5 ${marker.kind === 'checkin' ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'}`}
-                      style={{ top, left: marker.kind === 'checkin' ? 10 : 132 }}
+                      onClick={() => editStay(band.stay)}
+                      className={`pointer-events-auto absolute inset-x-1 overflow-hidden rounded-xl border bg-gradient-to-b from-emerald-500 to-teal-500 px-2 py-1.5 text-left text-white shadow-[0_12px_24px_rgba(16,185,129,0.22)] transition hover:-translate-y-0.5 hover:shadow-lg ${editingStayId === band.stay.id ? 'ring-2 ring-emerald-300/50' : ''}`}
+                      style={{ top, height }}
                     >
-                      <BedDouble className="h-3.5 w-3.5" />
-                      <span className="truncate">{marker.label}</span>
+                      <span className="absolute inset-y-2 left-1 w-1 rounded-full bg-white/55" />
+                      <span className="relative z-10 flex min-w-0 items-center gap-1 pl-1 text-[8px] font-black">
+                        <BedDouble className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{compact ? '夜宿' : `${band.displayStart}-${band.displayEnd}`}</span>
+                      </span>
+                      {!compact && (
+                        <span className="relative z-10 mt-1 block min-w-0 truncate pl-1 text-[9px] font-black leading-tight">
+                          {band.lodging.name}
+                        </span>
+                      )}
+                      {height >= 82 && (
+                        <span className="relative z-10 mt-1 block truncate pl-1 text-[8px] font-bold text-white/78">
+                          第 {band.nightIndex} / {band.nightCount} 晚
+                        </span>
+                      )}
                     </button>
                   );
                 })}
               </div>
-
-              <div className="pointer-events-none absolute left-[64px] right-3 top-0">
+              <div className="pointer-events-none absolute right-3 top-0" style={{ left: 168 }}>
                 {scheduleEvents.map((event) => {
                   const top = ((event.start - START_MINUTES) / SLOT_MINUTES) * SLOT_HEIGHT + 2;
                   const height = Math.max(28, ((event.end - event.start) / SLOT_MINUTES) * SLOT_HEIGHT - 4);
@@ -2731,8 +2722,8 @@ export default function AdminView() {
               {currentDayTimeZoneTransitions.map((transition) => (
                 <div
                   key={transition.id}
-                  className="pointer-events-none absolute left-[64px] right-3 z-40"
-                  style={{ top: (transition.minutes / SLOT_MINUTES) * SLOT_HEIGHT }}
+                  className="pointer-events-none absolute right-3 z-40"
+                  style={{ left: 168, top: (transition.minutes / SLOT_MINUTES) * SLOT_HEIGHT }}
                 >
                   <div className="absolute inset-x-0 top-0 border-t border-dashed border-sky-300" />
                   <div className="absolute right-2 top-0 -translate-y-1/2 rounded-full border border-sky-100 bg-white/95 px-2 py-1 text-[8px] font-black text-sky-700 shadow-sm">
@@ -2747,8 +2738,8 @@ export default function AdminView() {
                 const roomyPreview = previewHeight >= 54;
                 return (
                   <div
-                    className="pointer-events-none absolute left-[64px] right-3 z-50"
-                    style={{ top: previewTop, height: previewHeight }}
+                    className="pointer-events-none absolute right-3 z-50"
+                    style={{ left: 168, top: previewTop, height: previewHeight }}
                   >
                     <div className="absolute inset-0 rounded-xl border border-indigo-400/80 bg-indigo-500/12 shadow-[0_16px_34px_rgba(79,70,229,0.18),inset_0_1px_0_rgba(255,255,255,0.78)] backdrop-blur-[2px]" />
                     <div className="absolute inset-x-0 top-0 border-t-2 border-indigo-500" />
@@ -2806,37 +2797,6 @@ export default function AdminView() {
             <div className="h-56">
               <MapView />
             </div>
-            {currentDayRouteEdges.length > 0 && (
-              <div className="max-h-32 space-y-1 overflow-y-auto border-t border-slate-200 bg-white/80 p-2">
-                <div className="mb-1 flex items-center justify-between text-[9px] font-black text-slate-400">
-                  <span>D{currentDay} 事件接续</span>
-                  <span>{currentDayRouteEdges.length} 段</span>
-                </div>
-                {currentDayRouteEdges.map(({ edge, source, target, segment }) => {
-                  const active = activeEdgeId === edge.id;
-                  const hidden = edge.displayStatus === 'hidden';
-                  return (
-                    <button
-                      key={edge.id}
-                      type="button"
-                      onClick={() => setActiveEdgeId(edge.id)}
-                      className={`flex w-full items-center gap-2 rounded-xl border px-2.5 py-2 text-left transition ${active ? 'border-rose-200 bg-rose-50 text-rose-700 shadow-sm' : hidden ? 'border-slate-100 bg-slate-50 text-slate-400 hover:bg-white' : 'border-white bg-white/75 text-slate-600 hover:border-slate-200 hover:bg-white'}`}
-                    >
-                      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${hidden ? 'bg-slate-200 text-slate-500' : 'bg-rose-100 text-rose-600'}`}>
-                        {hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Route className="h-3.5 w-3.5" />}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[10px] font-black">{source.title} → {target.title}</span>
-                        <span className="mt-0.5 block truncate text-[9px] font-bold opacity-70">
-                          {edgeTransportLabel(edge.transportType)} · {[segment?.distanceText || edge.distance, segment?.durationText || edge.duration].filter(Boolean).join(' · ') || '待计算'}
-                          {edge.isLocked ? ' · 已锁定' : ''}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
           </div>
 
           <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">

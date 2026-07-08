@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowUpRight,
+  BedDouble,
   CalendarDays,
   Compass,
   MapPin,
   Plus,
+  Route,
   Search,
   Users,
   X,
@@ -21,8 +23,50 @@ interface HomeViewProps {
   onTripsLoaded: (trips: TripSummary[]) => void;
 }
 
+const HOME_TRIPS_CACHE_KEY = 'voyageplanner.homeTrips.v2';
+
 const formatDate = (date: string) =>
   new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric' }).format(new Date(`${date}T00:00:00`));
+
+const formatDateRange = (trip: TripSummary) => `${formatDate(trip.start_date)} - ${formatDate(trip.end_date)}`;
+
+const resolvedTripCenter = (trip: TripSummary) => {
+  const label = `${trip.slug} ${trip.title}`.toLowerCase();
+  if (label.includes('iceland') || trip.title.includes('冰岛')) return { center_lat: 65, center_lng: -18 };
+  if (label.includes('dalian') || trip.title.includes('大连')) return { center_lat: 38.9, center_lng: 121.6 };
+  return { center_lat: trip.center_lat, center_lng: trip.center_lng };
+};
+
+const normaliseTripSummary = (trip: TripSummary): TripSummary => ({
+  ...trip,
+  ...resolvedTripCenter(trip),
+});
+
+const readCachedTrips = () => {
+  if (typeof window === 'undefined') return [] as TripSummary[];
+  try {
+    const raw = window.localStorage.getItem(HOME_TRIPS_CACHE_KEY);
+    if (!raw) return [] as TripSummary[];
+    const parsed = JSON.parse(raw) as TripSummary[];
+    return Array.isArray(parsed) ? parsed.map(normaliseTripSummary) : [];
+  } catch {
+    return [] as TripSummary[];
+  }
+};
+
+const cacheTrips = (trips: TripSummary[]) => {
+  try {
+    window.localStorage.setItem(HOME_TRIPS_CACHE_KEY, JSON.stringify(trips));
+  } catch {
+    // Ignore storage quota or private-mode failures; live fetch still works.
+  }
+};
+
+const tripRouteText = (trip: TripSummary) => {
+  const cities = trip.cities.filter(Boolean);
+  if (cities.length) return cities.slice(0, 3).join(' · ');
+  return trip.origin || trip.subtitle || '目的地待补充';
+};
 
 export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSelectTrip, onTripsLoaded }: HomeViewProps) {
   const [trips, setTrips] = useState<TripSummary[]>([]);
@@ -40,9 +84,11 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
     trip_region: 'overseas',
   });
 
-  const focusAndOpenTrip = (slug: string) => {
+  const focusTrip = (slug: string) => onSelectTrip(slug);
+
+  const openTrip = (slug: string) => {
     onSelectTrip(slug);
-    window.setTimeout(() => onOpenTrip(slug), 650);
+    onOpenTrip(slug);
   };
 
   const createTrip = async (event: React.FormEvent) => {
@@ -62,17 +108,39 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
   };
 
   useEffect(() => {
-    fetch('/api/trips')
+    let cancelled = false;
+    const cachedTrips = readCachedTrips();
+    if (cachedTrips.length) {
+      setTrips(cachedTrips);
+      onTripsLoaded(cachedTrips);
+      setLoading(false);
+    }
+
+    fetch('/api/trips', { headers: { Accept: 'application/json' } })
       .then(async (response) => {
         if (!response.ok) throw new Error('行程列表加载失败');
         return response.json();
       })
       .then((data: TripSummary[]) => {
-        setTrips(data);
-        onTripsLoaded(data);
+        if (cancelled) return;
+        const nextTrips = data.map(normaliseTripSummary);
+        setTrips(nextTrips);
+        onTripsLoaded(nextTrips);
+        cacheTrips(nextTrips);
+        setError(null);
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : '行程列表加载失败'))
-      .finally(() => setLoading(false));
+      .catch((reason) => {
+        if (!cancelled && !cachedTrips.length) {
+          setError(reason instanceof Error ? reason.message : '行程列表加载失败');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [onTripsLoaded]);
 
   const filteredTrips = useMemo(() => {
@@ -97,11 +165,11 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
           <button onClick={() => setCreating(true)} className="flex items-center gap-1.5 rounded-xl bg-indigo-500 px-3.5 py-2.5 text-xs font-bold text-white shadow-lg shadow-indigo-500/20 transition hover:bg-indigo-400">
             <Plus className="h-4 w-4" /> 新建旅行
           </button>
-        <div className="hidden items-center gap-3 rounded-2xl border border-white/15 bg-slate-950/55 px-4 py-3 text-xs shadow-2xl backdrop-blur-xl sm:flex">
-          <div><span className="font-black text-white">{trips.length}</span><span className="ml-1.5 text-slate-400">段旅程</span></div>
-          <div className="h-4 w-px bg-white/15" />
-          <div><span className="font-black text-white">{totalDays}</span><span className="ml-1.5 text-slate-400">天在路上</span></div>
-        </div>
+          <div className="hidden items-center gap-3 rounded-2xl border border-white/15 bg-slate-950/55 px-4 py-3 text-xs shadow-2xl backdrop-blur-xl sm:flex">
+            <div><span className="font-black text-white">{trips.length}</span><span className="ml-1.5 text-slate-400">段旅程</span></div>
+            <div className="h-4 w-px bg-white/15" />
+            <div><span className="font-black text-white">{totalDays}</span><span className="ml-1.5 text-slate-400">天在路上</span></div>
+          </div>
         </div>
       </header>
 
@@ -163,29 +231,33 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
           </div>
 
           <div className="max-h-[calc(100vh-210px)] space-y-2 overflow-y-auto p-3 no-scrollbar">
-            {loading && <div className="p-6 text-center text-xs text-slate-400">正在展开旅行地图...</div>}
+            {loading && !trips.length && <div className="p-6 text-center text-xs text-slate-400">正在展开旅行地图...</div>}
+            {loading && trips.length > 0 && <div className="px-2 pb-1 text-[10px] font-semibold text-slate-500">正在同步最新行程...</div>}
             {error && <div className="p-6 text-center text-xs text-rose-300">{error}</div>}
-            {filteredTrips.map((trip) => (
-              <button
-                key={trip.slug}
-                onClick={() => focusAndOpenTrip(trip.slug)}
-                className={`group w-full overflow-hidden rounded-2xl border text-left transition ${
-                  selectedSlug === trip.slug ? 'border-indigo-400/60 bg-white/10' : 'border-white/5 bg-white/[0.035] hover:bg-white/[0.07]'
-                }`}
-              >
-                <div className="flex gap-3 p-2.5">
-                  <img src={trip.cover_image_url} alt="" className="h-20 w-24 shrink-0 rounded-xl object-cover" />
-                  <div className="min-w-0 flex-1 py-1">
-                    <div className="text-[10px] font-bold text-indigo-300">{formatDate(trip.start_date)} - {formatDate(trip.end_date)}</div>
-                    <h2 className="mt-1 truncate text-sm font-bold text-white">{trip.title}</h2>
-                    <div className="mt-2 flex items-center gap-2 text-[10px] font-semibold text-slate-400">
-                      <span>{trip.day_count} 天</span><span>·</span><span>{trip.node_count} 个地点</span>
+            {filteredTrips.map((trip) => {
+              const selected = selectedSlug === trip.slug;
+              return (
+                <button
+                  key={trip.slug}
+                  onClick={() => focusTrip(trip.slug)}
+                  className={`group w-full overflow-hidden rounded-2xl border text-left transition ${
+                    selected ? 'border-indigo-400/70 bg-white/12 shadow-lg shadow-indigo-950/20' : 'border-white/5 bg-white/[0.035] hover:bg-white/[0.07]'
+                  }`}
+                >
+                  <div className="flex gap-3 p-2.5">
+                    <img src={trip.cover_image_url} alt="" className="h-20 w-24 shrink-0 rounded-xl object-cover" />
+                    <div className="min-w-0 flex-1 py-1">
+                      <div className="text-[10px] font-bold text-indigo-300">{formatDateRange(trip)}</div>
+                      <h2 className="mt-1 truncate text-sm font-bold text-white">{trip.title}</h2>
+                      <div className="mt-2 flex items-center gap-2 text-[10px] font-semibold text-slate-400">
+                        <span>{trip.day_count} 天</span><span>·</span><span>{trip.node_count} 个地点</span>
+                      </div>
                     </div>
+                    <MapPin className={`mt-2 h-4 w-4 transition ${selected ? 'text-indigo-300' : 'text-slate-500 group-hover:text-white'}`} />
                   </div>
-                  <ArrowUpRight className="mt-2 h-4 w-4 text-slate-500 transition group-hover:text-white" />
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         </div>
       </aside>
@@ -197,14 +269,18 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="pointer-events-auto absolute bottom-5 right-4 z-[1001] w-[calc(100%-2rem)] overflow-hidden rounded-[24px] border border-white/15 bg-slate-950/80 shadow-2xl backdrop-blur-2xl sm:hidden"
+            className="pointer-events-auto absolute bottom-5 right-4 z-[1001] w-[calc(100%-2rem)] overflow-hidden rounded-[24px] border border-white/15 bg-slate-950/84 shadow-2xl backdrop-blur-2xl sm:hidden"
           >
             <div className="flex gap-3 p-3">
-              <img src={selectedTrip.cover_image_url} alt="" className="h-24 w-28 shrink-0 rounded-2xl object-cover" />
+              <img src={selectedTrip.cover_image_url} alt="" className="h-28 w-28 shrink-0 rounded-2xl object-cover" />
               <div className="min-w-0 flex-1 py-1">
-                <div className="text-[10px] font-bold text-indigo-300">{formatDate(selectedTrip.start_date)} - {formatDate(selectedTrip.end_date)}</div>
-                <h2 className="mt-1 truncate text-sm font-bold">{selectedTrip.title}</h2>
-                <button onClick={() => focusAndOpenTrip(selectedTrip.slug)} className="mt-3 flex items-center gap-1.5 rounded-xl bg-indigo-500 px-3 py-2 text-[11px] font-bold text-white">
+                <div className="text-[10px] font-bold text-indigo-300">{formatDateRange(selectedTrip)}</div>
+                <h2 className="mt-1 line-clamp-2 text-sm font-black">{selectedTrip.title}</h2>
+                <div className="mt-2 flex flex-wrap gap-1.5 text-[9px] font-bold text-slate-300">
+                  <span className="rounded-full bg-white/10 px-2 py-1">{selectedTrip.day_count} 天</span>
+                  <span className="rounded-full bg-white/10 px-2 py-1">{selectedTrip.node_count} 个地点</span>
+                </div>
+                <button onClick={() => openTrip(selectedTrip.slug)} className="mt-3 flex items-center gap-1.5 rounded-xl bg-indigo-500 px-3 py-2 text-[11px] font-bold text-white">
                   打开旅行计划 <ArrowUpRight className="h-3.5 w-3.5" />
                 </button>
               </div>
@@ -214,20 +290,31 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
       </AnimatePresence>
 
       {selectedTrip && (
-        <div className="pointer-events-auto absolute bottom-10 right-[400px] z-[1000] hidden w-[330px] overflow-hidden rounded-[26px] border border-white/15 bg-slate-950/72 shadow-2xl backdrop-blur-2xl lg:block">
-          <img src={selectedTrip.cover_image_url} alt={selectedTrip.title} className="h-36 w-full object-cover" />
+        <div className="pointer-events-auto absolute bottom-8 right-[400px] z-[1000] hidden w-[360px] overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/78 shadow-2xl backdrop-blur-2xl lg:block">
+          <div className="relative h-40 overflow-hidden">
+            <img src={selectedTrip.cover_image_url} alt={selectedTrip.title} className="h-full w-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/18 to-transparent" />
+            <div className="absolute left-4 top-4 rounded-full border border-white/20 bg-slate-950/58 px-3 py-1 text-[10px] font-black text-white backdrop-blur-md">{formatDateRange(selectedTrip)}</div>
+            <div className="absolute bottom-4 left-4 right-4">
+              <div className="flex items-center gap-2 text-[10px] font-bold text-indigo-200">
+                <MapPin className="h-3.5 w-3.5" /> {tripRouteText(selectedTrip)}
+              </div>
+              <h2 className="mt-1 line-clamp-2 text-xl font-black leading-tight">{selectedTrip.title}</h2>
+            </div>
+          </div>
           <div className="p-4">
-            <div className="flex items-center gap-2 text-[10px] font-bold text-indigo-300">
-              <MapPin className="h-3.5 w-3.5" /> {selectedTrip.cities.slice(0, 3).join(' · ')}
+            <p className="line-clamp-2 text-[11px] leading-relaxed text-slate-300">{selectedTrip.summary}</p>
+            <div className="mt-4 grid grid-cols-3 gap-2 text-center text-[10px] font-semibold text-slate-300">
+              <div className="rounded-xl border border-white/10 bg-white/6 px-2 py-2"><CalendarDays className="mx-auto mb-1 h-3.5 w-3.5 text-indigo-300" />{selectedTrip.day_count} 天</div>
+              <div className="rounded-xl border border-white/10 bg-white/6 px-2 py-2"><Compass className="mx-auto mb-1 h-3.5 w-3.5 text-sky-300" />{selectedTrip.node_count} 地点</div>
+              <div className="rounded-xl border border-white/10 bg-white/6 px-2 py-2"><Users className="mx-auto mb-1 h-3.5 w-3.5 text-emerald-300" />{selectedTrip.travelers} 人</div>
             </div>
-            <h2 className="mt-2 text-lg font-black">{selectedTrip.title}</h2>
-            <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-400">{selectedTrip.summary}</p>
-            <div className="mt-3 flex items-center gap-3 text-[10px] font-semibold text-slate-300">
-              <span className="flex items-center gap-1"><CalendarDays className="h-3.5 w-3.5" />{selectedTrip.day_count} 天</span>
-              <span className="flex items-center gap-1"><Compass className="h-3.5 w-3.5" />{selectedTrip.node_count} 个地点</span>
-              <span className="flex items-center gap-1"><Users className="h-3.5 w-3.5" />{selectedTrip.travelers} 人</span>
+            <div className="mt-3 flex items-center gap-2 rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-[10px] font-semibold text-slate-300">
+              <Route className="h-3.5 w-3.5 text-indigo-300" />
+              <span className="min-w-0 flex-1 truncate">{selectedTrip.subtitle}</span>
+              <BedDouble className="h-3.5 w-3.5 text-emerald-300" />
             </div>
-            <button onClick={() => focusAndOpenTrip(selectedTrip.slug)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-500 py-3 text-xs font-bold text-white transition hover:bg-indigo-400">
+            <button onClick={() => openTrip(selectedTrip.slug)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-500 py-3 text-xs font-bold text-white shadow-lg shadow-indigo-950/25 transition hover:bg-indigo-400">
               打开旅行计划 <ArrowUpRight className="h-4 w-4" />
             </button>
           </div>

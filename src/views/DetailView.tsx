@@ -433,7 +433,7 @@ export default function DetailView() {
 
   return (
     <div className="visa-itinerary">
-      <div className="screen-itinerary space-y-5 print:hidden">
+      <div className="screen-itinerary w-full space-y-5 print:hidden">
         {preview && (
           <ImagePreviewModal
             images={preview.images}

@@ -705,6 +705,21 @@ def serialize_trip(db, slug):
     return result
 
 
+KNOWN_TRIP_CENTERS = (
+    ("iceland", 65.0, -18.0),
+    ("\u51b0\u5c9b", 65.0, -18.0),
+    ("dalian", 38.9, 121.6),
+    ("\u5927\u8fde", 38.9, 121.6),
+)
+
+
+def known_trip_center(trip):
+    label = f"{trip.get('slug', '')} {trip.get('title', '')}".lower()
+    for token, lat, lng in KNOWN_TRIP_CENTERS:
+        if token in label:
+            return lat, lng
+    return None
+
 @app.get("/api/health")
 def health():
     return jsonify({"status": "ok"})
@@ -728,12 +743,21 @@ def list_trips():
             scheduled_nodes = [node for node in nodes if node["status"] != "unscheduled" and node["day"] > 0]
             map_nodes = [node for node in scheduled_nodes if node["type"] != "transport"] or [node for node in nodes if node["type"] != "transport"] or nodes
             cover_node = next((node for node in map_nodes if node["image_url"]), None)
+            known_center = known_trip_center(trip)
+            if known_center:
+                center_lat, center_lng = known_center
+            elif map_nodes:
+                center_lat = sum(node["lat"] for node in map_nodes) / len(map_nodes)
+                center_lng = sum(node["lng"] for node in map_nodes) / len(map_nodes)
+            else:
+                center_lat = 0
+                center_lng = 0
             trip.update(
                 {
                     "node_count": len(nodes),
                     "day_count": max((node["day"] for node in scheduled_nodes), default=0),
-                    "center_lat": sum(node["lat"] for node in map_nodes) / len(map_nodes) if map_nodes else 0,
-                    "center_lng": sum(node["lng"] for node in map_nodes) / len(map_nodes) if map_nodes else 0,
+                    "center_lat": center_lat,
+                    "center_lng": center_lng,
                     "cover_image_url": cover_node["image_url"] if cover_node else trip["car_image_url"],
                     "cities": list(dict.fromkeys(node["city"] for node in nodes if node["city"]))[:5],
                 }

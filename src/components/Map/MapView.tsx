@@ -175,6 +175,12 @@ const tripPinIcon = (trip: TripSummary, selected: boolean) => L.divIcon({
   iconAnchor: [18, 36],
 });
 
+const homeTripZoom = (trip?: Pick<TripSummary, 'slug' | 'title'> | null) => {
+  const label = `${trip?.slug || ''} ${trip?.title || ''}`.toLowerCase();
+  if (label.includes('dalian') || label.includes('大连')) return 8;
+  if (label.includes('iceland') || label.includes('冰岛')) return 5;
+  return trip ? 5 : 2;
+};
 const toRadians = (value: number) => (value * Math.PI) / 180;
 const toDegrees = (value: number) => (value * 180) / Math.PI;
 
@@ -474,7 +480,7 @@ interface MapViewProps {
 function HomeMapController({ trip }: { trip: TripSummary | null }) {
   const map = useMap();
   useEffect(() => {
-    map.flyTo(trip ? [trip.center_lat, trip.center_lng] : [32, 12], trip ? 5 : 2, { duration: 1.25 });
+    map.flyTo(trip ? [trip.center_lat, trip.center_lng] : [32, 12], homeTripZoom(trip), { duration: 1.25 });
   }, [map, trip]);
   return null;
 }
@@ -760,7 +766,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
         if (!mapRef.current) {
           mapRef.current = new maps.Map(containerRef.current, {
             center: selectedHomeTrip ? { lat: selectedHomeTrip.center_lat, lng: selectedHomeTrip.center_lng } : { lat: 32, lng: 12 },
-            zoom: selectedHomeTrip ? 5 : 2,
+            zoom: homeTripZoom(selectedHomeTrip),
             mapTypeControl: false,
             streetViewControl: false,
             fullscreenControl: false,
@@ -840,11 +846,14 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             });
             marker.addListener('click', () => {
               onSelectHomeTrip?.(trip.slug);
-              window.setTimeout(() => onOpenHomeTrip?.(trip.slug), 650);
+              infoRef.current?.close();
             });
             overlaysRef.current.push(marker);
           });
-          if (selectedHomeTrip) mapRef.current.panTo({ lat: selectedHomeTrip.center_lat, lng: selectedHomeTrip.center_lng });
+          if (selectedHomeTrip) {
+            mapRef.current.setZoom(homeTripZoom(selectedHomeTrip));
+            mapRef.current.panTo({ lat: selectedHomeTrip.center_lat, lng: selectedHomeTrip.center_lng });
+          }
         } else {
           visibleTransportRoutes.forEach((route) => {
             const routeSegment = routeSegmentFor(routeSegments, 'transport_node', route.id);
@@ -1187,7 +1196,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
         if (!mapRef.current) {
           mapRef.current = new AMap.Map(containerRef.current, {
             center: [centerLng, centerLat],
-            zoom: selectedHomeTrip ? 5 : 4,
+            zoom: selectedHomeTrip ? homeTripZoom(selectedHomeTrip) : 4,
             viewMode: '2D',
           });
           mapRef.current.addControl(new AMap.Scale());
@@ -1277,7 +1286,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
             });
             marker.on('click', () => {
               onSelectHomeTrip?.(trip.slug);
-              window.setTimeout(() => onOpenHomeTrip?.(trip.slug), 650);
+              infoRef.current?.close();
             });
             overlaysRef.current.push(marker);
           });
@@ -1530,7 +1539,9 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
             overlaysRef.current.push(marker);
           });
         }
-        if (boundsPoints.length) mapRef.current.setFitView(overlaysRef.current, false, [70, 70, 70, 70]);
+        if (mode === 'home' && selectedHomeTrip) {
+          mapRef.current.setZoomAndCenter(homeTripZoom(selectedHomeTrip), [selectedHomeTrip.center_lng, selectedHomeTrip.center_lat]);
+        } else if (boundsPoints.length) mapRef.current.setFitView(overlaysRef.current, false, [70, 70, 70, 70]);
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : '高德地图加载失败'));
 
@@ -1748,7 +1759,6 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
             eventHandlers={{
               click: () => {
                 onSelectHomeTrip?.(trip.slug);
-                window.setTimeout(() => onOpenHomeTrip?.(trip.slug), 650);
               },
             }}
           >
