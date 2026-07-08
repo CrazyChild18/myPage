@@ -1,4 +1,4 @@
-const VERSION = '2026-07-08-home-map-cache-v1';
+const VERSION = '2026-07-08-admin-drag-v2';
 const APP_CACHE = `voyage-app-${VERSION}`;
 const MAP_CACHE = `voyage-map-${VERSION}`;
 const API_CACHE = `voyage-api-${VERSION}`;
@@ -22,12 +22,14 @@ self.addEventListener('activate', (event) => {
 });
 
 const isTripsRequest = (url) => url.origin === self.location.origin && url.pathname === '/api/trips';
-const isStaticAsset = (url) => url.origin === self.location.origin && (
+const isAppShell = (url) => url.origin === self.location.origin && (
   url.pathname === '/' ||
-  url.pathname === '/index.html' ||
+  url.pathname === '/index.html'
+);
+const isStaticAsset = (url) => url.origin === self.location.origin && (
   url.pathname.startsWith('/assets/') ||
   url.pathname.endsWith('.css') ||
-  url.pathname.endsWith('.js')
+  (url.pathname.endsWith('.js') && url.pathname !== '/voyage-sw.js')
 );
 const isMapAsset = (request, url) => request.destination === 'image' && (
   url.hostname.includes('basemaps.cartocdn.com') ||
@@ -69,6 +71,10 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (isTripsRequest(url)) {
     event.respondWith(networkFirst(event.request, API_CACHE));
+    return;
+  }
+  if (isAppShell(url)) {
+    event.respondWith(networkFirst(event.request, APP_CACHE));
     return;
   }
   if (isStaticAsset(url)) {

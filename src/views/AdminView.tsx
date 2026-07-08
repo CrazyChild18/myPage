@@ -873,6 +873,8 @@ export default function AdminView() {
   } | null>(null);
   const draggedSegmentOffsetRef = useRef(0);
   const draggedPointerOffsetRef = useRef(0);
+  const draggedStartVisibleRef = useRef<number | null>(null);
+  const draggedOriginPointerRef = useRef<number | null>(null);
   const dragPreviewRef = useRef<ScheduleDragPreview | null>(null);
   const inputClass = 'mt-1.5 w-full rounded-xl border border-slate-200 bg-white/85 px-3 py-2.5 text-xs outline-none transition focus:border-indigo-400';
 
@@ -1647,7 +1649,12 @@ export default function AdminView() {
     event.dataTransfer.setDragImage(canvas, 0, 0);
   };
 
-  const beginDrag = (event: React.DragEvent<HTMLElement>, node: ItineraryNode, segmentOffsetMinutes = 0) => {
+  const beginDrag = (
+    event: React.DragEvent<HTMLElement>,
+    node: ItineraryNode,
+    segmentOffsetMinutes = 0,
+    visibleStartMinutes: number | null = null,
+  ) => {
     if (node.type === 'transport') {
       event.preventDefault();
       toast('交通项目不可拖动修改，请删除后重新录入');
@@ -1664,6 +1671,17 @@ export default function AdminView() {
     event.dataTransfer.setData('application/x-itinerary-node', node.id);
     event.dataTransfer.setData('application/x-itinerary-segment-offset', String(Math.max(0, Math.round(segmentOffsetMinutes))));
     event.dataTransfer.setData('application/x-itinerary-pointer-offset', String(Math.max(0, Math.round(pointerOffsetMinutes))));
+    if (visibleStartMinutes != null) {
+      const startVisible = Math.max(START_MINUTES, Math.round(visibleStartMinutes));
+      const originPointer = minutesFromSchedulePointer(event.clientY, startVisible + pointerOffsetMinutes);
+      event.dataTransfer.setData('application/x-itinerary-drag-start-visible', String(startVisible));
+      event.dataTransfer.setData('application/x-itinerary-drag-origin-pointer', String(originPointer));
+      draggedStartVisibleRef.current = startVisible;
+      draggedOriginPointerRef.current = originPointer;
+    } else {
+      draggedStartVisibleRef.current = null;
+      draggedOriginPointerRef.current = null;
+    }
     event.dataTransfer.setData('text/plain', node.id);
     draggedSegmentOffsetRef.current = Math.max(0, Math.round(segmentOffsetMinutes));
     draggedPointerOffsetRef.current = Math.max(0, Math.round(pointerOffsetMinutes));
@@ -1847,6 +1865,34 @@ export default function AdminView() {
     return Number.isFinite(parsed) ? Math.max(0, parsed) : draggedPointerOffsetRef.current;
   };
 
+  const getDraggedStartVisible = (event: React.DragEvent<HTMLElement>) => {
+    const raw = event.dataTransfer.getData('application/x-itinerary-drag-start-visible');
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? Math.max(START_MINUTES, parsed) : draggedStartVisibleRef.current;
+  };
+
+  const getDraggedOriginPointer = (event: React.DragEvent<HTMLElement>) => {
+    const raw = event.dataTransfer.getData('application/x-itinerary-drag-origin-pointer');
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : draggedOriginPointerRef.current;
+  };
+
+  const scheduleDragPlacementInput = (event: React.DragEvent<HTMLElement>) => {
+    const pointerMinutes = minutesFromSchedulePointer(event.clientY, START_MINUTES);
+    const startVisible = getDraggedStartVisible(event);
+    const originPointer = getDraggedOriginPointer(event);
+    if (startVisible != null && originPointer != null) {
+      return {
+        rawMinutes: startVisible + pointerMinutes - originPointer,
+        pointerOffsetMinutes: 0,
+      };
+    }
+    return {
+      rawMinutes: pointerMinutes,
+      pointerOffsetMinutes: getDraggedPointerOffset(event),
+    };
+  };
+
   const previewScheduleStart = (rawMinutes: number, movingNodeId: string, segmentOffsetMinutes = 0, pointerOffsetMinutes = 0) =>
     snapSchedulePlacement(rawMinutes, movingNodeId, segmentOffsetMinutes, pointerOffsetMinutes);
 
@@ -1896,11 +1942,12 @@ export default function AdminView() {
     if (!nodeId) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
+    const placementInput = scheduleDragPlacementInput(event);
     const nextPreview = createScheduleDragPreview(
-      minutesFromSchedulePointer(event.clientY, START_MINUTES),
+      placementInput.rawMinutes,
       nodeId,
       getDraggedSegmentOffset(event),
-      getDraggedPointerOffset(event),
+      placementInput.pointerOffsetMinutes,
     );
     if (!nextPreview) return;
     dragPreviewRef.current = nextPreview;
@@ -1988,13 +2035,14 @@ export default function AdminView() {
       return;
     }
     const latestPreview = dragPreviewRef.current;
+    const placementInput = scheduleDragPlacementInput(event);
     const placement = latestPreview?.nodeId === nodeId && latestPreview.visibleDay === currentDay
       ? { startAbsolute: latestPreview.startAbsolute }
       : previewScheduleStart(
-        minutesFromSchedulePointer(event.clientY, START_MINUTES),
+        placementInput.rawMinutes,
         nodeId,
         getDraggedSegmentOffset(event),
-        getDraggedPointerOffset(event),
+        placementInput.pointerOffsetMinutes,
       );
     void scheduleNode(
       nodeId,
@@ -2004,6 +2052,8 @@ export default function AdminView() {
     setDraggedNodeId(null);
     draggedSegmentOffsetRef.current = 0;
     draggedPointerOffsetRef.current = 0;
+    draggedStartVisibleRef.current = null;
+    draggedOriginPointerRef.current = null;
     clearDragPreview();
   };
 
@@ -2038,6 +2088,8 @@ export default function AdminView() {
     setDraggedNodeId(null);
     draggedSegmentOffsetRef.current = 0;
     draggedPointerOffsetRef.current = 0;
+    draggedStartVisibleRef.current = null;
+    draggedOriginPointerRef.current = null;
     clearDragPreview();
     if (!nodeId) return;
     void unscheduleNode(nodeId);
@@ -2284,6 +2336,8 @@ export default function AdminView() {
                     setDraggedNodeId(null);
                     draggedSegmentOffsetRef.current = 0;
                     draggedPointerOffsetRef.current = 0;
+                    draggedStartVisibleRef.current = null;
+                    draggedOriginPointerRef.current = null;
                     clearDragPreview();
                   }}
                   onClick={() => edit(node)}
@@ -2601,12 +2655,14 @@ export default function AdminView() {
                           dragEvent.preventDefault();
                           return;
                         }
-                        beginDrag(dragEvent, event.node, segmentOffsetMinutes);
+                        beginDrag(dragEvent, event.node, segmentOffsetMinutes, event.start);
                       }}
                       onDragEnd={() => {
                         setDraggedNodeId(null);
                         draggedSegmentOffsetRef.current = 0;
                         draggedPointerOffsetRef.current = 0;
+                        draggedStartVisibleRef.current = null;
+                        draggedOriginPointerRef.current = null;
                         clearDragPreview();
                       }}
                       onClick={() => edit(event.node, currentDay)}
