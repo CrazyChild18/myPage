@@ -27,9 +27,17 @@ import {
 import LocationPicker from '../components/LocationPicker/LocationPicker';
 import MapView from '../components/Map/MapView';
 import { useItineraryStore } from '../store/useItineraryStore';
-import { EdgeAnchor, EdgeDisplayStatus, EdgeTransportType, ItineraryEdge, ItineraryNode, ItineraryType, TransportMode } from '../types';
+import { ActivitySubtype, EdgeAnchor, EdgeDisplayStatus, EdgeTransportType, ItineraryEdge, ItineraryNode, ItineraryType, Lodging, Stay, TransportMode } from '../types';
 import { mapProviderForTrip } from '../map/provider';
-import { compareItineraryNodes, isScheduledNode, isUnscheduledPointNode } from '../utils/itinerary';
+import {
+  activitySubtypeLabels,
+  activitySubtypeOf,
+  compareItineraryNodes,
+  isScheduledNode,
+  isUnscheduledPointNode,
+  itineraryTypeLabel,
+  itineraryTypeTone,
+} from '../utils/itinerary';
 import {
   BEIJING_TIMEZONE,
   DEFAULT_TIMEZONE,
@@ -53,17 +61,15 @@ const CONNECTION_APPROACH_THRESHOLD_MINUTES = SCHEDULE_SNAP_MINUTES;
 const CONNECTION_RELEASE_THRESHOLD_MINUTES = SCHEDULE_SNAP_MINUTES;
 const CONNECTION_GAP_MINUTES = 0;
 
-const pointTypeOptions: Array<{ value: Exclude<ItineraryType, 'transport'>; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-  { value: 'sightseeing', label: '景点', icon: MapPin },
-  { value: 'hotel', label: '住宿', icon: BedDouble },
-  { value: 'restaurant', label: '饭店', icon: Utensils },
+const pointTypeOptions: Array<{ value: ActivitySubtype; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+  { value: 'sightseeing', label: activitySubtypeLabels.sightseeing, icon: MapPin },
+  { value: 'meal', label: activitySubtypeLabels.meal, icon: Utensils },
+  { value: 'shopping', label: activitySubtypeLabels.shopping, icon: Image },
+  { value: 'leisure', label: activitySubtypeLabels.leisure, icon: Eye },
+  { value: 'tour', label: activitySubtypeLabels.tour, icon: Route },
+  { value: 'layover', label: activitySubtypeLabels.layover, icon: Plane },
+  { value: 'other', label: activitySubtypeLabels.other, icon: MapPin },
 ];
-
-const legacyPointTypeLabels: Partial<Record<ItineraryType, string>> = {
-  transfer: '转机',
-  leisure: '休闲',
-  shopping: '采购',
-};
 
 const transportModeOptions: Array<{ value: TransportMode; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { value: 'flight', label: '飞机', icon: Plane },
@@ -87,6 +93,7 @@ const edgeTransportOptions: Array<{ value: EdgeTransportType; label: string; hin
 
 const typeLabels: Record<ItineraryType, string> = {
   transport: '交通',
+  activity: '活动',
   transfer: '转机',
   hotel: '住宿',
   restaurant: '饭店',
@@ -122,6 +129,11 @@ const defaultEdgeTransportType = (
 };
 
 const typeTone: Record<ItineraryType, { card: string; badge: string; event: string }> = {
+  activity: {
+    card: 'border-violet-100 bg-violet-50/70',
+    badge: 'bg-violet-100 text-violet-700',
+    event: 'border-violet-200 bg-violet-600 text-white',
+  },
   sightseeing: {
     card: 'border-violet-100 bg-violet-50/70',
     badge: 'bg-violet-100 text-violet-700',
@@ -160,6 +172,7 @@ const typeTone: Record<ItineraryType, { card: string; badge: string; event: stri
 };
 
 const defaultDurationByType: Record<ItineraryType, number> = {
+  activity: 90,
   sightseeing: 90,
   hotel: 45,
   restaurant: 75,
@@ -168,6 +181,24 @@ const defaultDurationByType: Record<ItineraryType, number> = {
   leisure: 90,
   shopping: 60,
 };
+
+const defaultDurationByActivitySubtype: Record<ActivitySubtype, number> = {
+  sightseeing: 90,
+  meal: 75,
+  shopping: 60,
+  leisure: 90,
+  tour: 120,
+  ticketed_event: 120,
+  layover: 60,
+  errand: 45,
+  buffer: 30,
+  other: 60,
+};
+
+const defaultDurationForNode = (node: Pick<ItineraryNode, 'type' | 'activity_subtype'>) =>
+  node.type === 'transport'
+    ? defaultDurationByType.transport
+    : defaultDurationByActivitySubtype[activitySubtypeOf(node)];
 
 type EmptyFormOptions = {
   day?: number;
@@ -189,7 +220,8 @@ const emptyForm = ({
   return {
     title: '',
     description: '',
-    type: isTransport ? 'transport' : 'sightseeing',
+    type: isTransport ? 'transport' : 'activity',
+    activity_subtype: isTransport ? undefined : 'sightseeing',
     time: hasSchedule ? time : '',
     day: hasSchedule ? day : 0,
     date: hasSchedule ? date : '',
@@ -247,6 +279,56 @@ const addDays = (isoDate: string, offset: number) => {
   const date = new Date(Date.UTC(year, month - 1, day + offset));
   return date.toISOString().slice(0, 10);
 };
+
+const emptyLodgingDraft = ({
+  id = `lodging-${Date.now()}`,
+  timezone = DEFAULT_TIMEZONE,
+}: {
+  id?: string;
+  timezone?: string;
+} = {}): Lodging => ({
+  id,
+  name: '',
+  address: '',
+  city: '',
+  lat: 64.1466,
+  lng: -21.9426,
+  timezone,
+  image_url: '',
+  image_urls: [],
+  booking_site: '爱彼迎',
+  reservation_no: '',
+  notes: '',
+  place_provider: 'manual',
+  provider_place_id: '',
+  coord_system: 'wgs84',
+});
+
+const emptyStayDraft = ({
+  id = `stay-${Date.now()}`,
+  lodgingId = '',
+  day = 1,
+  date = '2026-09-26',
+}: {
+  id?: string;
+  lodgingId?: string;
+  day?: number;
+  date?: string;
+} = {}): Stay => ({
+  id,
+  lodging_id: lodgingId,
+  check_in_day: day,
+  check_in_date: date,
+  check_in_time: '15:00',
+  check_out_day: day + 1,
+  check_out_date: addDays(date, 1),
+  check_out_time: '11:00',
+  guests: 0,
+  room_type: '',
+  price: '',
+  status: 'planned',
+  notes: '',
+});
 
 const dateToUtcTime = (isoDate?: string) => {
   if (!isoDate) return null;
@@ -311,7 +393,7 @@ const eventDurationMinutes = (node: ItineraryNode) => {
     else if (end <= start) end += 24 * 60;
     if (end > start) return Math.max(30, Math.min(24 * 60, end - start));
   }
-  return Math.max(30, parsed || defaultDurationByType[node.type] || 60);
+  return Math.max(30, parsed || defaultDurationForNode(node) || 60);
 };
 
 const clampDurationMinutes = (minutes: number, maxMinutes = 12 * 60) => {
@@ -398,6 +480,21 @@ const snapScheduleMinutes = (minutes: number) => {
 
 const nodeImageUrl = (node: ItineraryNode) => node.image_urls?.[0] || node.image_url || '';
 
+const lodgingImageUrl = (lodging: Lodging) => lodging.image_urls?.[0] || lodging.image_url || '';
+
+const stayNightCount = (stay: Stay) => Math.max(1, dateDeltaDays(stay.check_in_date, stay.check_out_date) || 1);
+
+const stayNightIndex = (stay: Stay, date: string) => {
+  const offset = dateDeltaDays(stay.check_in_date, date);
+  if (offset == null || offset < 0 || offset >= stayNightCount(stay)) return null;
+  return offset + 1;
+};
+
+const stayDurationText = (stay: Stay) => {
+  const nights = stayNightCount(stay);
+  return nights > 1 ? `${nights} 晚` : '1 晚';
+};
+
 const nodeLocationText = (node: ItineraryNode) => {
   if (node.type === 'transport') {
     return `${node.departure_place || '出发地'} → ${node.arrival_place || '到达地'}`;
@@ -433,6 +530,10 @@ type EventGlassTone = {
 };
 
 const eventGlassPalettes: Record<ItineraryType, EventGlassTone[]> = {
+  activity: [
+    { from: 'rgba(124, 58, 237, 0.94)', via: 'rgba(147, 51, 234, 0.9)', to: 'rgba(217, 70, 239, 0.88)', border: 'rgba(221, 214, 254, 0.76)', shadow: 'rgba(124, 58, 237, 0.24)', rail: '#f5d0fe' },
+    { from: 'rgba(37, 99, 235, 0.94)', via: 'rgba(79, 70, 229, 0.9)', to: 'rgba(124, 58, 237, 0.88)', border: 'rgba(191, 219, 254, 0.76)', shadow: 'rgba(37, 99, 235, 0.22)', rail: '#bfdbfe' },
+  ],
   sightseeing: [
     { from: 'rgba(124, 58, 237, 0.94)', via: 'rgba(147, 51, 234, 0.9)', to: 'rgba(217, 70, 239, 0.88)', border: 'rgba(221, 214, 254, 0.76)', shadow: 'rgba(124, 58, 237, 0.24)', rail: '#f5d0fe' },
     { from: 'rgba(37, 99, 235, 0.94)', via: 'rgba(79, 70, 229, 0.9)', to: 'rgba(124, 58, 237, 0.88)', border: 'rgba(191, 219, 254, 0.76)', shadow: 'rgba(37, 99, 235, 0.22)', rail: '#bfdbfe' },
@@ -474,7 +575,18 @@ const hashString = (value: string) => {
 };
 
 const eventGlassTone = (node: ItineraryNode) => {
-  const palette = eventGlassPalettes[node.type] || eventGlassPalettes.sightseeing;
+  const paletteKey: ItineraryType = node.type === 'activity'
+    ? activitySubtypeOf(node) === 'meal'
+      ? 'restaurant'
+      : activitySubtypeOf(node) === 'layover'
+      ? 'transfer'
+      : activitySubtypeOf(node) === 'shopping'
+      ? 'shopping'
+      : activitySubtypeOf(node) === 'leisure'
+      ? 'leisure'
+      : 'activity'
+    : node.type;
+  const palette = eventGlassPalettes[paletteKey] || eventGlassPalettes.activity;
   return palette[hashString(`${node.id}-${node.title}`) % palette.length];
 };
 
@@ -530,9 +642,9 @@ type ScheduleDragPreview = {
   durationText: string;
 };
 
-type LibraryFilter = 'all' | ItineraryType;
+type LibraryFilter = 'all' | ActivitySubtype;
 
-const libraryFilterOrder: ItineraryType[] = ['sightseeing', 'hotel', 'restaurant', 'transfer', 'leisure', 'shopping'];
+const libraryFilterOrder: ActivitySubtype[] = ['sightseeing', 'meal', 'shopping', 'leisure', 'tour', 'layover', 'other'];
 
 const dayForDate = (date: string | undefined, dateByDay: Map<number, string>, tripStartDate?: string) => {
   if (!date) return null;
@@ -670,10 +782,16 @@ export default function AdminView() {
     nodes,
     edges,
     routeSegments,
+    lodgings,
+    stays,
     addNode,
     updateNode,
     updateEdge,
     deleteNode,
+    saveLodging,
+    deleteLodging,
+    saveStay,
+    deleteStay,
     autoConnectEdges,
     saving,
     activeDay,
@@ -696,8 +814,9 @@ export default function AdminView() {
         node.day + Math.floor((parseTime(node.time) + eventDurationMinutes(node)) / END_MINUTES),
       )
       .filter((day): day is number => Boolean(day && day > 0));
-    return Array.from(new Set([...fromTrip, ...fromNodes, ...fromEndNodes, 1])).sort((a, b) => a - b);
-  }, [nodes, trip?.end_date, trip?.start_date]);
+    const fromStays = stays.flatMap((stay) => [stay.check_in_day, stay.check_out_day]).filter((day) => day > 0);
+    return Array.from(new Set([...fromTrip, ...fromNodes, ...fromEndNodes, ...fromStays, 1])).sort((a, b) => a - b);
+  }, [nodes, stays, trip?.end_date, trip?.start_date]);
 
   const dateByDay = useMemo(() => {
     const map = new Map<number, string>();
@@ -707,14 +826,23 @@ export default function AdminView() {
     nodes.filter(isScheduledNode).forEach((node) => {
       if (!map.has(node.day) && node.date) map.set(node.day, node.date);
     });
+    stays.forEach((stay) => {
+      if (!map.has(stay.check_in_day) && stay.check_in_date) map.set(stay.check_in_day, stay.check_in_date);
+      if (!map.has(stay.check_out_day) && stay.check_out_date) map.set(stay.check_out_day, stay.check_out_date);
+    });
     return map;
-  }, [dayNumbers, nodes, trip?.start_date]);
+  }, [dayNumbers, nodes, stays, trip?.start_date]);
 
   const currentDay = activeDay === 'all' ? dayNumbers[0] || 1 : activeDay;
   const currentDate = dateByDay.get(currentDay) || trip?.start_date || '2026-09-26';
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm({ day: currentDay, date: currentDate }));
+  const [editorMode, setEditorMode] = useState<'item' | 'lodging'>('item');
+  const [editingLodgingId, setEditingLodgingId] = useState<string | null>(null);
+  const [editingStayId, setEditingStayId] = useState<string | null>(null);
+  const [lodgingForm, setLodgingForm] = useState<Lodging>(() => emptyLodgingDraft());
+  const [stayForm, setStayForm] = useState<Stay>(() => emptyStayDraft());
   const [edgeDraft, setEdgeDraft] = useState<{ transportType: EdgeTransportType; displayStatus: EdgeDisplayStatus; isLocked: boolean }>({
     transportType: 'car',
     displayStatus: 'visible',
@@ -791,9 +919,57 @@ export default function AdminView() {
     [editingEdge, routeSegments],
   );
   const mapProvider = mapProviderForTrip(trip);
+  const lodgingById = useMemo(() => new Map(lodgings.map((lodging) => [lodging.id, lodging])), [lodgings]);
+  const activeStays = useMemo(() => stays.filter((stay) => stay.status !== 'cancelled'), [stays]);
+  const currentNightStays = useMemo(
+    () => activeStays
+      .map((stay) => {
+        const nightIndex = stayNightIndex(stay, currentDate);
+        const lodging = lodgingById.get(stay.lodging_id);
+        return nightIndex && lodging ? { stay, lodging, nightIndex, nightCount: stayNightCount(stay) } : null;
+      })
+      .filter((item): item is { stay: Stay; lodging: Lodging; nightIndex: number; nightCount: number } => Boolean(item)),
+    [activeStays, currentDate, lodgingById],
+  );
+  const currentStayMarkers = useMemo(
+    () => activeStays
+      .flatMap((stay) => {
+        const lodging = lodgingById.get(stay.lodging_id);
+        if (!lodging) return [];
+        const markers: Array<{ id: string; stay: Stay; lodging: Lodging; kind: 'checkin' | 'checkout'; minutes: number; label: string }> = [];
+        if (stay.check_in_date === currentDate) {
+          markers.push({
+            id: `${stay.id}-checkin`,
+            stay,
+            lodging,
+            kind: 'checkin',
+            minutes: parseTime(stay.check_in_time),
+            label: `${stay.check_in_time} 入住 ${lodging.name}`,
+          });
+        }
+        if (stay.check_out_date === currentDate) {
+          markers.push({
+            id: `${stay.id}-checkout`,
+            stay,
+            lodging,
+            kind: 'checkout',
+            minutes: parseTime(stay.check_out_time),
+            label: `${stay.check_out_time} 退房 ${lodging.name}`,
+          });
+        }
+        return markers;
+      })
+      .sort((a, b) => a.minutes - b.minutes || a.label.localeCompare(b.label, 'zh-CN')),
+    [activeStays, currentDate, lodgingById],
+  );
+  const editingLodging = editingLodgingId ? lodgings.find((lodging) => lodging.id === editingLodgingId) || null : null;
+  const editingStay = editingStayId ? stays.find((stay) => stay.id === editingStayId) || null : null;
 
   useEffect(() => {
     if (!editingEdge) return;
+    setEditorMode('item');
+    setEditingLodgingId(null);
+    setEditingStayId(null);
     setEditingId(null);
     setEdgeDraft({
       transportType: editingEdge.transportType || 'car',
@@ -803,7 +979,7 @@ export default function AdminView() {
   }, [editingEdge]);
 
   const currentDayNodes = useMemo(
-    () => sortedNodes.filter((node) => isScheduledNode(node) && scheduleSegmentForDay(node, currentDay, dateByDay, trip?.start_date)),
+    () => sortedNodes.filter((node) => node.type !== 'hotel' && isScheduledNode(node) && scheduleSegmentForDay(node, currentDay, dateByDay, trip?.start_date)),
     [currentDay, dateByDay, sortedNodes, trip?.start_date],
   );
   const scheduledDisplayNodes = useMemo(
@@ -845,10 +1021,11 @@ export default function AdminView() {
   const currentDayTimeZoneText = currentDayTimeZoneTransitions.length
     ? `多时区 · ${currentDayTimeZoneTransitions.map((item) => `${timeZoneOptionLabel(item.departureTimezone)}→${timeZoneOptionLabel(item.arrivalTimezone)}`).join(' · ')}`
     : `${timeZoneOptionLabel(currentDayTimezone)} ${formatTimeZoneOffset(currentDayTimezone, zonedTimeToUtcMs(currentDate, '12:00', currentDayTimezone))}`;
-  const libraryNodes = useMemo(() => sortedNodes.filter(isUnscheduledPointNode), [sortedNodes]);
+  const libraryNodes = useMemo(() => sortedNodes.filter((node) => node.type !== 'hotel' && isUnscheduledPointNode(node)), [sortedNodes]);
   const libraryTypeCounts = useMemo(
-    () => libraryNodes.reduce<Partial<Record<ItineraryType, number>>>((counts, node) => {
-      counts[node.type] = (counts[node.type] || 0) + 1;
+    () => libraryNodes.reduce<Partial<Record<ActivitySubtype, number>>>((counts, node) => {
+      const subtype = activitySubtypeOf(node);
+      counts[subtype] = (counts[subtype] || 0) + 1;
       return counts;
     }, {}),
     [libraryNodes],
@@ -858,18 +1035,18 @@ export default function AdminView() {
       { value: 'all' as const, label: '全部', count: libraryNodes.length },
       ...libraryFilterOrder
         .filter((type) => libraryTypeCounts[type])
-        .map((type) => ({ value: type, label: typeLabels[type], count: libraryTypeCounts[type] || 0 })),
+        .map((type) => ({ value: type, label: activitySubtypeLabels[type], count: libraryTypeCounts[type] || 0 })),
     ],
     [libraryNodes.length, libraryTypeCounts],
   );
   const filteredLibraryNodes = useMemo(() => {
     const keyword = libraryQuery.trim().toLocaleLowerCase();
     return libraryNodes.filter((node) => {
-      if (libraryFilter !== 'all' && node.type !== libraryFilter) return false;
+      if (libraryFilter !== 'all' && activitySubtypeOf(node) !== libraryFilter) return false;
       if (!keyword) return true;
 
       return [
-        typeLabels[node.type],
+        itineraryTypeLabel(node),
         node.title,
         node.description,
         node.city,
@@ -880,6 +1057,22 @@ export default function AdminView() {
       ].some((value) => (value || '').toLocaleLowerCase().includes(keyword));
     });
   }, [libraryFilter, libraryNodes, libraryQuery]);
+  const filteredLodgings = useMemo(() => {
+    const keyword = libraryQuery.trim().toLocaleLowerCase();
+    if (libraryFilter !== 'all') return [];
+    return lodgings.filter((lodging) => {
+      if (!keyword) return true;
+      return [lodging.name, lodging.city, lodging.address, lodging.booking_site, lodging.reservation_no]
+        .some((value) => (value || '').toLocaleLowerCase().includes(keyword));
+    });
+  }, [libraryFilter, libraryQuery, lodgings]);
+  const staysByLodgingId = useMemo(
+    () => activeStays.reduce<Record<string, Stay[]>>((lookup, stay) => {
+      lookup[stay.lodging_id] = [...(lookup[stay.lodging_id] || []), stay];
+      return lookup;
+    }, {}),
+    [activeStays],
+  );
   const currentDayRouteEdges = useMemo(
     () => edges
       .filter((edge) => {
@@ -901,7 +1094,7 @@ export default function AdminView() {
     () => draggedNodeId ? nodes.find((node) => node.id === draggedNodeId) || null : null,
     [draggedNodeId, nodes],
   );
-  const canDropToLibrary = Boolean(draggedNode && draggedNode.type !== 'transport' && isScheduledNode(draggedNode));
+  const canDropToLibrary = Boolean(draggedNode && draggedNode.type !== 'transport' && draggedNode.type !== 'hotel' && isScheduledNode(draggedNode));
   const isPointFormScheduled = isScheduledNode({ id: editingId || 'draft', ...form });
 
   const formEndDay = (draft = form) =>
@@ -910,14 +1103,14 @@ export default function AdminView() {
   const formRangeDuration = (draft = form) => {
     const parsed = parseDurationMinutes(draft.duration);
     if (!isScheduledNode({ id: editingId || 'draft', ...draft })) {
-      return Math.max(SLOT_MINUTES, parsed || defaultDurationByType[draft.type] || SLOT_MINUTES);
+      return Math.max(SLOT_MINUTES, parsed || defaultDurationForNode(draft) || SLOT_MINUTES);
     }
     return durationBetweenRange(
       draft.day || currentDay,
       draft.time || '12:00',
       formEndDay(draft),
       draft.end_time || draft.time || '12:00',
-    ) || Math.max(SLOT_MINUTES, parsed || defaultDurationByType[draft.type] || SLOT_MINUTES);
+    ) || Math.max(SLOT_MINUTES, parsed || defaultDurationForNode(draft) || SLOT_MINUTES);
   };
 
   const schedulePointForm = (time = form.time || '12:00') => {
@@ -1134,7 +1327,10 @@ export default function AdminView() {
       departure_timezone: currentDayTimezone,
       arrival_timezone: currentDayTimezone,
     };
-    const pointDuration = defaultDurationByType[base.type] || SLOT_MINUTES;
+    const pointDuration = defaultDurationForNode(base) || SLOT_MINUTES;
+    setEditorMode('item');
+    setEditingLodgingId(null);
+    setEditingStayId(null);
     setEditingId(null);
     setActiveEdgeId(null);
     setForm(kind === 'point' && scheduled
@@ -1144,11 +1340,151 @@ export default function AdminView() {
     setPendingUploadUrls([]);
   };
 
+  const setLodgingEditor = (lodging: Lodging, stay: Stay, options: { editingLodgingId?: string | null; editingStayId?: string | null } = {}) => {
+    cleanupPendingUploads();
+    setEditorMode('lodging');
+    setEditingId(null);
+    setActiveNodeId(null);
+    setActiveEdgeId(null);
+    setEditingLodgingId(options.editingLodgingId ?? lodging.id);
+    setEditingStayId(options.editingStayId ?? stay.id);
+    setLodgingForm({
+      ...emptyLodgingDraft({ id: lodging.id, timezone: lodging.timezone || currentDayTimezone }),
+      ...lodging,
+      image_urls: lodging.image_urls?.length ? lodging.image_urls : lodging.image_url ? [lodging.image_url] : [],
+      booking_site: lodging.booking_site || '爱彼迎',
+      coord_system: lodging.coord_system || 'wgs84',
+      place_provider: lodging.place_provider || 'manual',
+      provider_place_id: lodging.provider_place_id || '',
+    });
+    setStayForm({
+      ...emptyStayDraft({
+        id: stay.id,
+        lodgingId: lodging.id,
+        day: stay.check_in_day || currentDay,
+        date: stay.check_in_date || currentDate,
+      }),
+      ...stay,
+      lodging_id: lodging.id,
+      status: stay.status || 'planned',
+    });
+    setImageUrlInput('');
+    setPendingUploadUrls([]);
+  };
+
+  const startNewLodging = () => {
+    const lodging = emptyLodgingDraft({ timezone: currentDayTimezone });
+    const stay = emptyStayDraft({ lodgingId: lodging.id, day: currentDay, date: currentDate });
+    setLodgingEditor(lodging, stay, { editingLodgingId: null, editingStayId: null });
+  };
+
+  const arrangeLodging = (lodging: Lodging) => {
+    const stay = emptyStayDraft({ lodgingId: lodging.id, day: currentDay, date: currentDate });
+    setLodgingEditor(lodging, stay, { editingLodgingId: lodging.id, editingStayId: null });
+  };
+
+  const editStay = (stay: Stay) => {
+    const lodging = lodgingById.get(stay.lodging_id);
+    if (!lodging) return;
+    setLodgingEditor(lodging, stay, { editingLodgingId: lodging.id, editingStayId: stay.id });
+    setActiveDay(stay.check_in_day || currentDay);
+  };
+
+  const updateStayCheckInDate = (date: string) => {
+    setStayForm((current) => {
+      const nextDay = dayForDate(date, dateByDay, trip?.start_date) || current.check_in_day || currentDay;
+      const checkOutDate = current.check_out_date && dateDeltaDays(date, current.check_out_date) != null && (dateDeltaDays(date, current.check_out_date) || 0) > 0
+        ? current.check_out_date
+        : addDays(date, 1);
+      const checkOutDay = dayForDate(checkOutDate, dateByDay, trip?.start_date) || nextDay + 1;
+      return { ...current, check_in_date: date, check_in_day: nextDay, check_out_date: checkOutDate, check_out_day: checkOutDay };
+    });
+  };
+
+  const updateStayCheckOutDate = (date: string) => {
+    setStayForm((current) => ({
+      ...current,
+      check_out_date: date,
+      check_out_day: dayForDate(date, dateByDay, trip?.start_date) || current.check_out_day || current.check_in_day + 1,
+    }));
+  };
+
+  const submitLodgingStay = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const name = lodgingForm.name.trim();
+    if (!name) {
+      toast('请填写住宿名称');
+      return;
+    }
+    try {
+      const lodgingPayload: Lodging = {
+        ...lodgingForm,
+        name,
+        address: lodgingForm.address || lodgingForm.city || '',
+        timezone: normaliseTimeZone(lodgingForm.timezone || currentDayTimezone),
+        booking_site: lodgingForm.booking_site || '爱彼迎',
+        image_url: lodgingForm.image_urls?.[0] || lodgingForm.image_url || '',
+        image_urls: lodgingForm.image_urls || [],
+        place_provider: lodgingForm.place_provider || 'manual',
+        provider_place_id: lodgingForm.provider_place_id || '',
+        coord_system: lodgingForm.coord_system || 'wgs84',
+      };
+      const checkInDay = dayForDate(stayForm.check_in_date, dateByDay, trip?.start_date) || stayForm.check_in_day || currentDay;
+      const checkOutDay = Math.max(
+        checkInDay,
+        dayForDate(stayForm.check_out_date, dateByDay, trip?.start_date) || stayForm.check_out_day || checkInDay + 1,
+      );
+      const stayPayload: Stay = {
+        ...stayForm,
+        lodging_id: lodgingPayload.id,
+        check_in_day: checkInDay,
+        check_out_day: checkOutDay,
+        status: stayForm.status || 'planned',
+      };
+      await saveLodging(lodgingPayload);
+      await saveStay(stayPayload);
+      setEditingLodgingId(lodgingPayload.id);
+      setEditingStayId(stayPayload.id);
+      setLodgingForm(lodgingPayload);
+      setStayForm(stayPayload);
+      toast(editingStayId ? `已保存住宿：${name}` : `已安排住宿：${name}`);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '住宿保存失败，请检查输入内容');
+    }
+  };
+
+  const deleteEditingStay = async () => {
+    if (!editingStayId) return;
+    if (!window.confirm('删除这个入住区间？住宿资料会保留，可重新安排。')) return;
+    try {
+      await deleteStay(editingStayId);
+      toast('已删除入住区间');
+      arrangeLodging(lodgingForm);
+    } catch {
+      toast('删除入住区间失败，请重试');
+    }
+  };
+
+  const deleteEditingLodging = async () => {
+    if (!editingLodgingId) return;
+    if (!window.confirm(`删除住宿“${lodgingForm.name}”及其入住区间？`)) return;
+    try {
+      await deleteLodging(editingLodgingId);
+      toast(`已删除住宿：${lodgingForm.name}`);
+      startNewLodging();
+    } catch {
+      toast('删除住宿失败，请重试');
+    }
+  };
+
   const edit = (node: ItineraryNode, focusDay?: number) => {
     cleanupPendingUploads();
     const { id, ...values } = node;
     const scheduled = isScheduledNode(node);
     const kind = node.type === 'transport' ? 'transport' : 'point';
+    setEditorMode('item');
+    setEditingLodgingId(null);
+    setEditingStayId(null);
     setEditingId(id);
     setForm({
       ...emptyForm({
@@ -1317,6 +1653,11 @@ export default function AdminView() {
       toast('交通项目不可拖动修改，请删除后重新录入');
       return;
     }
+    if (node.type === 'hotel') {
+      event.preventDefault();
+      toast('住宿请在右侧编辑入住区间');
+      return;
+    }
     const pointerOffsetMinutes = pointerOffsetInEventMinutes(event);
     event.dataTransfer.effectAllowed = 'move';
     setTransparentDragImage(event);
@@ -1335,6 +1676,10 @@ export default function AdminView() {
     if (!node) return;
     if (node.type === 'transport') {
       toast('交通项目不可拖动修改，请删除后重新录入');
+      return;
+    }
+    if (node.type === 'hotel') {
+      toast('住宿请在右侧编辑入住区间');
       return;
     }
 
@@ -1664,7 +2009,7 @@ export default function AdminView() {
 
   const unscheduleNode = async (nodeId: string) => {
     const node = nodes.find((item) => item.id === nodeId);
-    if (!node || node.type === 'transport') return;
+    if (!node || node.type === 'transport' || node.type === 'hotel') return;
     if (!isScheduledNode(node)) return;
 
     const patch: Partial<ItineraryNode> = {
@@ -1703,6 +2048,9 @@ export default function AdminView() {
       toast('交通项目需删除后重新录入');
       return;
     }
+    setEditorMode('item');
+    setEditingLodgingId(null);
+    setEditingStayId(null);
 
     if (next === 'transport') {
       setForm((current) => ({
@@ -1727,7 +2075,8 @@ export default function AdminView() {
 
     setForm((current) => ({
       ...current,
-      type: current.type === 'transport' ? 'sightseeing' : current.type,
+      type: current.type === 'transport' ? 'activity' : current.type === 'hotel' ? 'activity' : current.type,
+      activity_subtype: current.type === 'transport' ? 'sightseeing' : activitySubtypeOf(current),
       day: current.type === 'transport' ? 0 : current.day,
       date: current.type === 'transport' ? '' : current.date,
       time: current.type === 'transport' ? '' : current.time,
@@ -1744,6 +2093,9 @@ export default function AdminView() {
   };
 
   const startNew = (kind: 'point' | 'transport', time = '12:00', scheduled = kind === 'transport') => {
+    setEditorMode('item');
+    setEditingLodgingId(null);
+    setEditingStayId(null);
     reset({ kind, time, scheduled });
   };
 
@@ -1783,7 +2135,7 @@ export default function AdminView() {
               <div>
                 <h3 className="text-sm font-black text-slate-900">项目库</h3>
                 <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
-                  {filteredLibraryNodes.length} / {libraryNodes.length} 个待排期
+                  {filteredLibraryNodes.length} / {libraryNodes.length} 个待排期 · {filteredLodgings.length} / {lodgings.length} 个住宿
                 </p>
               </div>
               {libraryFilter !== 'all' && (
@@ -1842,10 +2194,87 @@ export default function AdminView() {
           </div>
 
           <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+            {filteredLodgings.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between px-1">
+                  <span className="text-[10px] font-black text-emerald-700">住宿库</span>
+                  <button
+                    type="button"
+                    onClick={startNewLodging}
+                    className="rounded-full border border-emerald-100 bg-emerald-50 px-2 py-0.5 text-[9px] font-black text-emerald-700 transition hover:bg-emerald-100"
+                  >
+                    <Plus className="mr-0.5 inline h-3 w-3" />住宿
+                  </button>
+                </div>
+                {filteredLodgings.map((lodging) => {
+                  const coverUrl = lodgingImageUrl(lodging);
+                  const lodgingStays = (staysByLodgingId[lodging.id] || [])
+                    .slice()
+                    .sort((a, b) => a.check_in_date.localeCompare(b.check_in_date) || a.check_in_time.localeCompare(b.check_in_time));
+                  return (
+                    <article
+                      key={lodging.id}
+                      className={`rounded-xl border p-2.5 shadow-sm transition hover:bg-white ${editingLodgingId === lodging.id ? 'border-emerald-200 bg-emerald-50 ring-2 ring-emerald-300/30' : 'border-emerald-100 bg-emerald-50/65'}`}
+                    >
+                      <div className="flex items-stretch gap-3">
+                        <button
+                          type="button"
+                          onClick={() => arrangeLodging(lodging)}
+                          className="relative h-[74px] w-[92px] shrink-0 overflow-hidden rounded-xl border border-white/70 bg-white/65 text-slate-400 transition hover:scale-[1.01]"
+                          aria-label={`安排住宿 ${lodging.name}`}
+                        >
+                          {coverUrl ? (
+                            <img src={coverUrl} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <span className="flex h-full w-full items-center justify-center">
+                              <BedDouble className="h-6 w-6" />
+                            </span>
+                          )}
+                          <span className="absolute left-1.5 top-1.5 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[8px] font-black text-emerald-700 shadow-sm">住宿</span>
+                        </button>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start justify-between gap-2">
+                            <button type="button" onClick={() => arrangeLodging(lodging)} className="min-w-0 text-left">
+                              <h4 className="truncate text-xs font-black text-slate-900">{lodging.name}</h4>
+                              <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-slate-500">
+                                {lodging.city || lodging.address || '住宿地址待补充'}
+                              </p>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => arrangeLodging(lodging)}
+                              className="shrink-0 rounded-lg border border-white/80 bg-white px-2 py-1 text-[9px] font-black text-emerald-700 shadow-sm transition hover:border-emerald-200"
+                            >
+                              安排
+                            </button>
+                          </div>
+                          {lodgingStays.length > 0 ? (
+                            <div className="mt-2 flex gap-1 overflow-x-auto pb-0.5">
+                              {lodgingStays.map((stay) => (
+                                <button
+                                  key={stay.id}
+                                  type="button"
+                                  onClick={() => editStay(stay)}
+                                  className={`shrink-0 rounded-full border px-2 py-0.5 text-[8px] font-black transition ${editingStayId === stay.id ? 'border-emerald-300 bg-white text-emerald-700' : 'border-white/80 bg-white/70 text-slate-500 hover:text-emerald-700'}`}
+                                >
+                                  D{stay.check_in_day}-D{stay.check_out_day} · {stayDurationText(stay)}
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="mt-2 text-[9px] font-bold text-emerald-700/70">尚未安排入住区间</p>
+                          )}
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
             {filteredLibraryNodes.map((node) => {
-              const tone = typeTone[node.type];
+              const tone = itineraryTypeTone(node);
               const coverUrl = nodeImageUrl(node);
-              const Icon = pointTypeOptions.find((option) => option.value === node.type)?.icon || MapPin;
+              const Icon = pointTypeOptions.find((option) => option.value === activitySubtypeOf(node))?.icon || MapPin;
               return (
                 <article
                   key={node.id}
@@ -1870,7 +2299,7 @@ export default function AdminView() {
                         </div>
                       )}
                       <span className={`absolute left-1.5 top-1.5 rounded-full px-1.5 py-0.5 text-[8px] font-black shadow-sm ${tone.badge}`}>
-                        {typeLabels[node.type]}
+                        {itineraryTypeLabel(node)}
                       </span>
                       <span className="absolute bottom-1.5 left-1.5 rounded-full bg-slate-900/75 px-1.5 py-0.5 text-[8px] font-black text-white shadow-sm">
                         待排期
@@ -1893,7 +2322,7 @@ export default function AdminView() {
                 </article>
               );
             })}
-            {!filteredLibraryNodes.length && (
+            {!filteredLibraryNodes.length && !filteredLodgings.length && (
               <div className="rounded-xl border border-dashed border-slate-200 bg-white/65 px-4 py-8 text-center">
                 <Search className="mx-auto h-5 w-5 text-slate-300" />
                 <p className="mt-2 text-xs font-bold text-slate-500">没有匹配的项目</p>
@@ -1907,7 +2336,7 @@ export default function AdminView() {
           <div className="mb-3 flex shrink-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <h3 className="text-sm font-black text-slate-900">按天时间表</h3>
-              <p className="mt-0.5 text-[10px] font-semibold text-slate-400">D{currentDay} · {formatShortDate(currentDate)} · {currentDayNodes.length} 个项目 · 旅程当地时间 · {currentDayTimeZoneText}</p>
+              <p className="mt-0.5 text-[10px] font-semibold text-slate-400">D{currentDay} · {formatShortDate(currentDate)} · {currentDayNodes.length} 个项目 · {currentNightStays.length} 个夜宿 · 旅程当地时间 · {currentDayTimeZoneText}</p>
             </div>
             <div className="flex min-w-0 flex-col gap-2">
               <div className="flex max-w-full gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-100/80 p-1">
@@ -1935,6 +2364,33 @@ export default function AdminView() {
               </button>
             </div>
           </div>
+
+          {currentNightStays.length > 0 && (
+            <div className="mb-3 grid shrink-0 gap-2 md:grid-cols-2">
+              {currentNightStays.map(({ stay, lodging, nightIndex, nightCount }) => (
+                <button
+                  key={stay.id}
+                  type="button"
+                  onClick={() => editStay(stay)}
+                  className={`flex min-w-0 items-center gap-3 rounded-2xl border px-3 py-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:bg-white ${editingStayId === stay.id ? 'border-emerald-300 bg-emerald-50 ring-2 ring-emerald-300/30' : 'border-emerald-100 bg-emerald-50/70'}`}
+                >
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white text-emerald-700 shadow-sm">
+                    {lodgingImageUrl(lodging) ? (
+                      <img src={lodgingImageUrl(lodging)} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <BedDouble className="h-5 w-5" />
+                    )}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-black text-slate-900">宿：{lodging.name}</span>
+                    <span className="mt-0.5 block truncate text-[10px] font-bold text-emerald-700">
+                      第 {nightIndex} 晚 / 共 {nightCount} 晚 · {lodging.city || lodging.address || '地址待补充'}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white">
             <div
@@ -1968,6 +2424,24 @@ export default function AdminView() {
                 </div>
               ))}
 
+              <div className="pointer-events-none absolute left-[64px] right-3 top-0 z-20">
+                {currentStayMarkers.map((marker) => {
+                  const top = ((marker.minutes - START_MINUTES) / SLOT_MINUTES) * SLOT_HEIGHT + 4;
+                  return (
+                    <button
+                      key={marker.id}
+                      type="button"
+                      onClick={() => editStay(marker.stay)}
+                      className={`pointer-events-auto absolute flex max-w-[72%] items-center gap-2 rounded-full border bg-white/95 px-3 py-1.5 text-[10px] font-black shadow-md backdrop-blur transition hover:-translate-y-0.5 ${marker.kind === 'checkin' ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'}`}
+                      style={{ top, left: marker.kind === 'checkin' ? 10 : 132 }}
+                    >
+                      <BedDouble className="h-3.5 w-3.5" />
+                      <span className="truncate">{marker.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
               <div className="pointer-events-none absolute left-[64px] right-3 top-0">
                 {scheduleEvents.map((event) => {
                   const top = ((event.start - START_MINUTES) / SLOT_MINUTES) * SLOT_HEIGHT + 2;
@@ -1977,7 +2451,7 @@ export default function AdminView() {
                   const coverUrl = nodeImageUrl(event.node);
                   const Icon = event.node.type === 'transport'
                     ? transportModeOptions.find((option) => option.value === event.node.transport_mode)?.icon || Route
-                    : pointTypeOptions.find((option) => option.value === event.node.type)?.icon || MapPin;
+                    : pointTypeOptions.find((option) => option.value === activitySubtypeOf(event.node))?.icon || MapPin;
                   const showScheduleDetails = height >= 58;
                   const showScheduleThumb = height >= 74;
                   const canDragEvent = !saving && event.node.type !== 'transport';
@@ -2176,7 +2650,7 @@ export default function AdminView() {
                           </div>
                           {!tinyPointCard && !narrowPointCard && (
                             <span className="shrink-0 rounded-full bg-white/18 px-1.5 py-0.5 text-[8px] font-black text-white/88 backdrop-blur">
-                              {typeLabels[event.node.type]}
+                              {itineraryTypeLabel(event.node)}
                             </span>
                           )}
                         </div>
@@ -2184,7 +2658,7 @@ export default function AdminView() {
                         <>
                           <div className="relative z-10 flex items-center justify-between gap-2 pl-2 text-[9px] font-black text-white/90">
                             <span className="truncate tabular-nums tracking-wide">{pointTimeText}</span>
-                            <span className="mr-7 shrink-0 rounded-full bg-white/18 px-1.5 py-0.5 text-white/90 backdrop-blur">{typeLabels[event.node.type]}</span>
+                            <span className="mr-7 shrink-0 rounded-full bg-white/18 px-1.5 py-0.5 text-white/90 backdrop-blur">{itineraryTypeLabel(event.node)}</span>
                           </div>
                           <div className={`relative z-10 min-w-0 pl-2 ${showScheduleThumb ? 'mt-1.5 flex items-start gap-2' : 'mt-0.5'}`}>
                             {showScheduleThumb && (
@@ -2294,7 +2768,7 @@ export default function AdminView() {
           </div>
         </section>
 
-        <form onSubmit={submit} className="min-h-0 min-w-0 space-y-3 rounded-2xl border border-white/60 bg-white/55 p-3 shadow-lg backdrop-blur-xl xl:h-full xl:overflow-y-auto">
+        <form onSubmit={editorMode === 'lodging' ? submitLodgingStay : submit} className="min-h-0 min-w-0 space-y-3 rounded-2xl border border-white/60 bg-white/55 p-3 shadow-lg backdrop-blur-xl xl:h-full xl:overflow-y-auto">
           <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-100">
             <button
               type="button"
@@ -2345,10 +2819,12 @@ export default function AdminView() {
 
           <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
             <div>
-              <h3 className="text-sm font-black text-slate-900">{editingEdge ? '路段设置' : editingId ? '编辑项目' : '项目录入'}</h3>
+              <h3 className="text-sm font-black text-slate-900">{editingEdge ? '路段设置' : editorMode === 'lodging' ? (editingStayId ? '编辑住宿' : '住宿录入') : editingId ? '编辑项目' : '项目录入'}</h3>
               <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
                 {editingEdge
                   ? `${editingEdgeSource?.title || '起点'} → ${editingEdgeTarget?.title || '终点'}`
+                  : editorMode === 'lodging'
+                  ? `${editingStayId ? '入住区间' : '新增入住'} · D${stayForm.check_in_day || currentDay} ${stayForm.check_in_date || currentDate} → D${stayForm.check_out_day || currentDay + 1} ${stayForm.check_out_date || addDays(currentDate, 1)}`
                   : form.type === 'transport'
                   ? `交通 · D${form.day || currentDay} · ${form.date || currentDate} · ${form.time || '12:00'}`
                   : isScheduledNode({ id: editingId || 'draft', ...form })
@@ -2372,12 +2848,15 @@ export default function AdminView() {
                   <button type="button" onClick={() => startNew('transport')} className="rounded-lg border border-sky-100 bg-sky-50 px-2 py-1.5 text-[10px] font-black text-sky-700 shadow-sm transition hover:bg-sky-100">
                     <Plus className="mr-1 inline h-3 w-3" />交通
                   </button>
+                  <button type="button" onClick={startNewLodging} className="rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-1.5 text-[10px] font-black text-emerald-700 shadow-sm transition hover:bg-emerald-100">
+                    <Plus className="mr-1 inline h-3 w-3" />住宿
+                  </button>
                   {editingExistingTransport && (
                     <button type="button" onClick={deleteEditingTransport} className="rounded-lg border border-red-100 bg-red-50 px-2 py-1.5 text-[10px] font-black text-red-600 shadow-sm transition hover:bg-red-100">
                       <Trash2 className="mr-1 inline h-3 w-3" />删除
                     </button>
                   )}
-                  {editingId && <button type="button" onClick={() => reset()} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-red-600 hover:bg-red-50">取消</button>}
+                  {(editingId || editorMode === 'lodging') && <button type="button" onClick={() => reset()} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-red-600 hover:bg-red-50">取消</button>}
                 </>
               )}
             </div>
@@ -2452,18 +2931,147 @@ export default function AdminView() {
             </div>
           ) : (
           <>
-          <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
-            <button type="button" disabled={editingExistingTransport} onClick={() => switchEditorMode('point')} className={`rounded-lg py-2 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50 ${form.type !== 'transport' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60'}`}>
+          <div className="grid grid-cols-3 gap-2 rounded-xl bg-slate-100 p-1">
+            <button type="button" disabled={editingExistingTransport} onClick={() => switchEditorMode('point')} className={`rounded-lg py-2 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50 ${editorMode === 'item' && form.type !== 'transport' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60'}`}>
               <MapPin className="mr-1 inline h-3.5 w-3.5" />地点项目
             </button>
-            <button type="button" disabled={editingExistingTransport} onClick={() => switchEditorMode('transport')} className={`rounded-lg py-2 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50 ${form.type === 'transport' ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-500 hover:bg-white/60'}`}>
+            <button type="button" disabled={editingExistingTransport} onClick={() => switchEditorMode('transport')} className={`rounded-lg py-2 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50 ${editorMode === 'item' && form.type === 'transport' ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-500 hover:bg-white/60'}`}>
               <Route className="mr-1 inline h-3.5 w-3.5" />交通
+            </button>
+            <button type="button" disabled={editingExistingTransport} onClick={startNewLodging} className={`rounded-lg py-2 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50 ${editorMode === 'lodging' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:bg-white/60'}`}>
+              <BedDouble className="mr-1 inline h-3.5 w-3.5" />住宿
             </button>
           </div>
 
+          {editorMode === 'lodging' ? (
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-black text-emerald-700">入住区间</div>
+                    <div className="mt-0.5 truncate text-xs font-bold text-slate-700">
+                      D{stayForm.check_in_day} {stayForm.check_in_time} → D{stayForm.check_out_day} {stayForm.check_out_time} · {stayDurationText(stayForm)}
+                    </div>
+                  </div>
+                  {editingStayId && (
+                    <button type="button" onClick={deleteEditingStay} className="shrink-0 rounded-xl border border-red-100 bg-white px-3 py-2 text-[10px] font-black text-red-600 shadow-sm transition hover:bg-red-50">
+                      删除区间
+                    </button>
+                  )}
+                </div>
+                <div className="mt-2 rounded-xl border border-white/80 bg-white/70 px-3 py-2 text-[10px] font-bold text-emerald-700">
+                  住宿固定进入日程：顶部显示夜宿，时间轴只显示入住/退房标记。
+                </div>
+              </div>
+
+              <label className="block text-xs font-semibold text-slate-700">
+                住宿名称
+                <input required value={lodgingForm.name} onChange={(event) => setLodgingForm({ ...lodgingForm, name: event.target.value })} placeholder="酒店、民宿或营地名称" className={inputClass} />
+              </label>
+
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-xs font-semibold text-slate-700">
+                  预订网站
+                  <input value={lodgingForm.booking_site || ''} onChange={(event) => setLodgingForm({ ...lodgingForm, booking_site: event.target.value })} placeholder="爱彼迎" className={inputClass} />
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  订单号
+                  <input value={lodgingForm.reservation_no || ''} onChange={(event) => setLodgingForm({ ...lodgingForm, reservation_no: event.target.value })} placeholder="可选" className={inputClass} />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <label className="text-xs font-semibold text-slate-700">
+                  入住 Day
+                  <select value={stayForm.check_in_day || currentDay} onChange={(event) => {
+                    const day = Number(event.target.value);
+                    const date = dateByDay.get(day) || stayForm.check_in_date || currentDate;
+                    setStayForm((current) => ({ ...current, check_in_day: day, check_in_date: date }));
+                  }} className={inputClass}>
+                    {dayNumbers.map((day) => <option key={day} value={day}>D{day}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  入住日期
+                  <input required type="date" value={stayForm.check_in_date || currentDate} onChange={(event) => updateStayCheckInDate(event.target.value)} className={inputClass} />
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  入住时间
+                  <input required type="time" value={stayForm.check_in_time || '15:00'} onChange={(event) => setStayForm({ ...stayForm, check_in_time: event.target.value })} className={inputClass} />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <label className="text-xs font-semibold text-slate-700">
+                  退房 Day
+                  <select value={stayForm.check_out_day || currentDay + 1} onChange={(event) => {
+                    const day = Number(event.target.value);
+                    setStayForm((current) => ({ ...current, check_out_day: day, check_out_date: dateByDay.get(day) || current.check_out_date }));
+                  }} className={inputClass}>
+                    {dayNumbers.map((day) => <option key={day} value={day}>D{day}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  退房日期
+                  <input required type="date" value={stayForm.check_out_date || addDays(currentDate, 1)} onChange={(event) => updateStayCheckOutDate(event.target.value)} className={inputClass} />
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  退房时间
+                  <input required type="time" value={stayForm.check_out_time || '11:00'} onChange={(event) => setStayForm({ ...stayForm, check_out_time: event.target.value })} className={inputClass} />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <label className="text-xs font-semibold text-slate-700">
+                  住客
+                  <input type="number" min={0} value={stayForm.guests || 0} onChange={(event) => setStayForm({ ...stayForm, guests: Number(event.target.value) })} className={inputClass} />
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  房型
+                  <input value={stayForm.room_type || ''} onChange={(event) => setStayForm({ ...stayForm, room_type: event.target.value })} placeholder="可选" className={inputClass} />
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  价格
+                  <input value={stayForm.price || ''} onChange={(event) => setStayForm({ ...stayForm, price: event.target.value })} placeholder="可选" className={inputClass} />
+                </label>
+              </div>
+
+              <label className="block text-xs font-semibold text-slate-700">
+                住宿当地时区
+                <select
+                  value={lodgingForm.timezone || currentDayTimezone}
+                  onChange={(event) => setLodgingForm({ ...lodgingForm, timezone: event.target.value })}
+                  className={inputClass}
+                >
+                  {TIMEZONE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label} · {option.hint}</option>
+                  ))}
+                </select>
+              </label>
+
+              <LocationPicker provider={mapProvider} value={{ lat: lodgingForm.lat, lng: lodgingForm.lng, city: lodgingForm.city, address: lodgingForm.address, title: lodgingForm.name, place_provider: lodgingForm.place_provider, provider_place_id: lodgingForm.provider_place_id, coord_system: lodgingForm.coord_system }} onChange={(location) => setLodgingForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, name: current.name || location.title || '', place_provider: location.place_provider || current.place_provider || 'manual', provider_place_id: location.provider_place_id || current.provider_place_id || '', coord_system: location.coord_system || current.coord_system || 'wgs84', timezone: inferTimeZoneFromLocation({ place: location.title || current.name, city: location.city, address: location.address, lat: location.lat, lng: location.lng, fallback: current.timezone || currentDayTimezone }) }))} />
+
+              <label className="block text-xs font-semibold text-slate-700">
+                住宿备注
+                <textarea rows={2} value={lodgingForm.notes || ''} onChange={(event) => setLodgingForm({ ...lodgingForm, notes: event.target.value })} className={inputClass} />
+              </label>
+
+              <label className="block text-xs font-semibold text-slate-700">
+                入住备注
+                <textarea rows={2} value={stayForm.notes || ''} onChange={(event) => setStayForm({ ...stayForm, notes: event.target.value })} className={inputClass} />
+              </label>
+
+              {editingLodgingId && (
+                <button type="button" onClick={deleteEditingLodging} className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-100 bg-red-50 py-2.5 text-xs font-black text-red-600 transition hover:bg-red-100">
+                  <Trash2 className="h-4 w-4" />删除住宿资料
+                </button>
+              )}
+            </div>
+          ) : (
+          <>
           <label className="block text-xs font-semibold text-slate-700">
             名称
-            <input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder={form.type === 'transport' ? '例如：北京飞往东京' : '景点、住宿或饭店名称'} className={inputClass} />
+            <input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder={form.type === 'transport' ? '例如：北京飞往东京' : '景点或饭店名称'} className={inputClass} />
           </label>
 
           {form.type === 'transport' ? (
@@ -2739,19 +3347,13 @@ export default function AdminView() {
                   <button
                     key={value}
                     type="button"
-                    onClick={() => setForm({ ...form, type: value })}
-                    className={`flex items-center justify-center gap-1 rounded-xl border px-2 py-2 text-[11px] font-black transition ${form.type === value ? 'border-indigo-200 bg-indigo-50 text-indigo-700 shadow-sm' : 'border-slate-200 bg-white/75 text-slate-500 hover:bg-white'}`}
+                    onClick={() => setForm({ ...form, type: 'activity', activity_subtype: value })}
+                    className={`flex items-center justify-center gap-1 rounded-xl border px-2 py-2 text-[11px] font-black transition ${activitySubtypeOf(form) === value ? 'border-indigo-200 bg-indigo-50 text-indigo-700 shadow-sm' : 'border-slate-200 bg-white/75 text-slate-500 hover:bg-white'}`}
                   >
                     <Icon className="h-3.5 w-3.5" />{label}
                   </button>
                 ))}
               </div>
-
-              {form.type !== 'sightseeing' && form.type !== 'hotel' && form.type !== 'restaurant' && (
-                <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-[10px] font-bold text-amber-700">
-                  当前保留历史类型：{legacyPointTypeLabels[form.type] || typeLabels[form.type]}
-                </div>
-              )}
 
               <label className="block text-xs font-semibold text-slate-700">
                 当地时区
@@ -2805,10 +3407,12 @@ export default function AdminView() {
           </label>
           </>
           )}
+          </>
+          )}
 
           <button disabled={saving || editingExistingTransport} className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 py-3 text-xs font-semibold text-white disabled:opacity-50">
             {saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            {editingEdge ? '保存路段设置' : editingExistingTransport ? '删除后重新录入' : editingId ? '保存修改' : '新增内容'}
+            {editingEdge ? '保存路段设置' : editorMode === 'lodging' ? (editingStayId ? '保存住宿区间' : '安排住宿') : editingExistingTransport ? '删除后重新录入' : editingId ? '保存修改' : '新增内容'}
           </button>
         </form>
       </div>

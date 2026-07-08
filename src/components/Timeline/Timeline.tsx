@@ -3,17 +3,8 @@ import { Clock, Image as ImageIcon, MapPin } from 'lucide-react';
 import ImagePreviewModal from '../ImagePreviewModal/ImagePreviewModal';
 import TransportTicket from '../TransportTicket/TransportTicket';
 import { useItineraryStore } from '../../store/useItineraryStore';
-import { ItineraryNode, ItineraryType } from '../../types';
-import { compareItineraryNodes, isScheduledNode } from '../../utils/itinerary';
-
-const meta: Record<Exclude<ItineraryType, 'transport'>, { label: string; tone: string }> = {
-  transfer: { label: '转机', tone: 'bg-sky-50 text-sky-700' },
-  hotel: { label: '住宿', tone: 'bg-emerald-50 text-emerald-700' },
-  restaurant: { label: '餐饮', tone: 'bg-rose-50 text-rose-700' },
-  sightseeing: { label: '景点', tone: 'bg-violet-50 text-violet-700' },
-  leisure: { label: '休闲', tone: 'bg-amber-50 text-amber-700' },
-  shopping: { label: '购物', tone: 'bg-pink-50 text-pink-700' },
-};
+import { ItineraryNode } from '../../types';
+import { compareItineraryNodes, isScheduledNode, itineraryTypeLabel, itineraryTypeTone } from '../../utils/itinerary';
 
 const imagesOf = (node: ItineraryNode) => node.image_urls?.length ? node.image_urls : node.image_url ? [node.image_url] : [];
 const isTicketTransport = (node: ItineraryNode) => Boolean(node.transport_mode || node.departure_place || node.arrival_place || /航班|高铁|火车|飞往|→/.test(node.title));
@@ -85,13 +76,13 @@ export default function Timeline() {
       >
         {filtered.map((node) => {
           if (node.type === 'transport') return <div ref={(element) => setCardRef(node.id, element)} key={node.id} onClick={() => setActiveNodeId(node.id)} className={`w-[86%] shrink-0 snap-center cursor-pointer rounded-2xl transition sm:w-auto ${activeNodeId === node.id ? 'ring-2 ring-indigo-500/30' : ''}`}>{isTicketTransport(node) ? <TransportTicket node={node} compact /> : <div className="rounded-xl border border-dashed border-sky-200 bg-sky-50/70 px-3 py-2.5"><div className="flex items-center justify-between gap-2"><span className="text-[10px] font-black text-sky-700">{node.time} · 路线衔接</span><span className="text-[9px] font-bold text-slate-400">D{node.day}</span></div><div className="mt-1 text-xs font-bold text-slate-700">{node.title}</div><p className="mt-0.5 line-clamp-1 text-[9px] text-slate-400">{node.description}</p></div>}</div>;
-          const nodeMeta = meta[node.type];
+          const nodeMeta = itineraryTypeTone(node);
           const images = imagesOf(node);
           const selected = activeNodeId === node.id;
           return <article ref={(element) => setCardRef(node.id, element)} key={node.id} onClick={() => setActiveNodeId(node.id)} className={`w-[86%] shrink-0 snap-center cursor-pointer overflow-hidden rounded-2xl border transition sm:w-auto ${selected ? 'border-indigo-200 bg-white/90 shadow-xl ring-2 ring-indigo-500/10' : 'border-white/60 bg-white/50 shadow-md hover:bg-white/75'}`}>
             {images[0] && <button onClick={(event) => { event.stopPropagation(); setPreview({ node, index: 0 }); }} className="group relative block h-28 w-full overflow-hidden"><img src={images[0]} alt={node.title} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" /><span className="absolute bottom-2 right-2 flex items-center gap-1 rounded-full bg-slate-950/70 px-2 py-1 text-[8px] font-bold text-white opacity-0 backdrop-blur transition group-hover:opacity-100"><ImageIcon className="h-3 w-3" />查看 {images.length} 张图片</span></button>}
             <div className="p-3.5">
-              <div className="flex items-center justify-between gap-2"><span className="flex items-center gap-1 text-[9px] font-bold text-slate-400"><Clock className="h-3 w-3" />{node.time} · D{node.day} · {node.date.slice(5)}</span><span className={`rounded-full px-2 py-0.5 text-[8px] font-black ${nodeMeta.tone}`}>{nodeMeta.label}</span></div>
+              <div className="flex items-center justify-between gap-2"><span className="flex items-center gap-1 text-[9px] font-bold text-slate-400"><Clock className="h-3 w-3" />{node.time} · D{node.day} · {node.date.slice(5)}</span><span className={`rounded-full px-2 py-0.5 text-[8px] font-black ${nodeMeta.timeline}`}>{itineraryTypeLabel(node)}</span></div>
               <h4 className="mt-1.5 text-sm font-black text-slate-900">{node.title}</h4>
               <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-slate-500">{node.description || node.address || '暂无说明'}</p>
               <div className="mt-2 border-t border-slate-100 pt-2">

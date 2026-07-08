@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useItineraryStore } from '../store/useItineraryStore';
 import { Accommodation, ItineraryNode, ItineraryType, TransportMode } from '../types';
-import { compareItineraryNodes, isScheduledNode } from '../utils/itinerary';
+import { compareItineraryNodes, isScheduledNode, itineraryTypeLabel, itineraryTypeTone } from '../utils/itinerary';
 import ImagePreviewModal from '../components/ImagePreviewModal/ImagePreviewModal';
 import TransportTicket from '../components/TransportTicket/TransportTicket';
 import {
@@ -28,6 +28,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const typeLabels: Record<ItineraryType, string> = {
   transfer: '转机',
   transport: '交通',
+  activity: '活动',
   hotel: '住宿',
   restaurant: '餐饮',
   sightseeing: '景点',
@@ -38,6 +39,7 @@ const typeLabels: Record<ItineraryType, string> = {
 const typeStyles: Record<ItineraryType, string> = {
   transfer: 'bg-sky-50 text-sky-700',
   transport: 'bg-cyan-50 text-cyan-700',
+  activity: 'bg-violet-50 text-violet-700',
   hotel: 'bg-emerald-50 text-emerald-700',
   restaurant: 'bg-rose-50 text-rose-700',
   sightseeing: 'bg-violet-50 text-violet-700',
@@ -144,7 +146,7 @@ const cleanHotelTitle = (title: string) =>
   title.replace(/^(入住|返回|抵达|前往)\s*/u, '').trim() || title;
 
 const isTransportLike = (node: ItineraryNode) =>
-  node.type === 'transport' || node.type === 'transfer';
+  node.type === 'transport';
 
 const isMainPlanNode = (node: ItineraryNode) =>
   !isTransportLike(node) && node.type !== 'hotel';
@@ -510,7 +512,7 @@ export default function DetailView() {
 
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <span className={`rounded-full px-2 py-0.5 text-[8px] font-black ${typeStyles[node.type]}`}>{typeLabels[node.type]}</span>
+                            <span className={`rounded-full px-2 py-0.5 text-[8px] font-black ${itineraryTypeTone(node).timeline}`}>{itineraryTypeLabel(node)}</span>
                             <span className="truncate text-sm font-black text-slate-900">{node.title}</span>
                           </div>
                           <div className="mt-1 flex items-start gap-1 text-[9px] font-semibold text-slate-400">

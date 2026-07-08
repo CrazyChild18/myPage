@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type ItineraryType = 'transport' | 'transfer' | 'hotel' | 'restaurant' | 'sightseeing' | 'leisure' | 'shopping';
+export type ActivitySubtype = 'sightseeing' | 'meal' | 'shopping' | 'leisure' | 'tour' | 'ticketed_event' | 'layover' | 'errand' | 'buffer' | 'other';
+export type LegacyItineraryType = 'transfer' | 'hotel' | 'restaurant' | 'sightseeing' | 'leisure' | 'shopping';
+export type ItineraryType = 'transport' | 'activity' | LegacyItineraryType;
 export type TransportMode = 'flight' | 'high_speed_rail' | 'train' | 'car' | 'bus' | 'subway' | 'ferry' | 'other';
 export type EdgeTransportType = 'walk' | 'car' | 'taxi' | 'transit' | 'bus' | 'subway' | 'train' | 'high_speed_rail' | 'ferry' | 'other';
 export type EdgeRoutePreference = 'recommended' | 'fastest' | 'shortest' | 'avoid_tolls' | 'avoid_highways';
@@ -20,6 +22,7 @@ export interface ItineraryNode {
   title: string;
   description?: string;
   type: ItineraryType;
+  activity_subtype?: ActivitySubtype;
   time: string; // e.g., "09:00"
   day: number; // e.g., 1, 2, 3
   date: string; // e.g., "2026-09-26"
@@ -103,6 +106,40 @@ export interface Accommodation {
   image_url?: string;
 }
 
+export interface Lodging {
+  id: string;
+  name: string;
+  address: string;
+  city?: string;
+  lat: number;
+  lng: number;
+  timezone?: string;
+  image_url?: string;
+  image_urls?: string[];
+  booking_site?: string;
+  reservation_no?: string;
+  notes?: string;
+  place_provider?: PlaceProvider;
+  provider_place_id?: string;
+  coord_system?: CoordinateSystem;
+}
+
+export interface Stay {
+  id: string;
+  lodging_id: string;
+  check_in_day: number;
+  check_in_date: string;
+  check_in_time: string;
+  check_out_day: number;
+  check_out_date: string;
+  check_out_time: string;
+  guests?: number;
+  room_type?: string;
+  price?: string;
+  status: 'planned' | 'cancelled';
+  notes?: string;
+}
+
 export interface Trip {
   slug: string;
   title: string;
@@ -133,4 +170,6 @@ export interface TripResponse extends Trip {
   nodes: ItineraryNode[];
   edges: ItineraryEdge[];
   routeSegments?: RouteSegment[];
+  lodgings?: Lodging[];
+  stays?: Stay[];
 }

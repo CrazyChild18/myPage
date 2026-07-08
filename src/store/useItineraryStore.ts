@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { ItineraryEdge, ItineraryNode, RouteSegment, Trip, TripResponse } from '../types';
+import { ItineraryEdge, ItineraryNode, Lodging, RouteSegment, Stay, Trip, TripResponse } from '../types';
 import { compareItineraryNodes, isScheduledNode } from '../utils/itinerary';
 
 interface ItineraryState {
@@ -8,6 +8,8 @@ interface ItineraryState {
   nodes: ItineraryNode[];
   edges: ItineraryEdge[];
   routeSegments: RouteSegment[];
+  lodgings: Lodging[];
+  stays: Stay[];
   activeNodeId: string | null;
   activeEdgeId: string | null;
   hoveredEdgeId: string | null;
@@ -23,6 +25,10 @@ interface ItineraryState {
   updateNode: (id: string, updatedFields: Partial<ItineraryNode>) => Promise<void>;
   updateEdge: (id: string, updatedFields: Partial<ItineraryEdge>) => Promise<void>;
   deleteNode: (id: string) => Promise<void>;
+  saveLodging: (lodging: Lodging) => Promise<void>;
+  deleteLodging: (id: string) => Promise<void>;
+  saveStay: (stay: Stay) => Promise<void>;
+  deleteStay: (id: string) => Promise<void>;
   setActiveNodeId: (id: string | null) => void;
   setActiveEdgeId: (id: string | null) => void;
   setHoveredEdgeId: (id: string | null) => void;
@@ -30,7 +36,14 @@ interface ItineraryState {
   autoConnectEdges: () => Promise<void>;
 }
 
-const tripOnly = ({ nodes: _nodes, edges: _edges, routeSegments: _routeSegments, ...trip }: TripResponse): Trip => trip;
+const tripOnly = ({
+  nodes: _nodes,
+  edges: _edges,
+  routeSegments: _routeSegments,
+  lodgings: _lodgings,
+  stays: _stays,
+  ...trip
+}: TripResponse): Trip => trip;
 
 const request = async <T>(url: string, options?: RequestInit): Promise<T> => {
   const response = await fetch(url, {
@@ -51,6 +64,8 @@ const applyTrip = (data: TripResponse) => ({
   nodes: [...data.nodes].sort(compareItineraryNodes),
   edges: data.edges,
   routeSegments: data.routeSegments || [],
+  lodgings: data.lodgings || [],
+  stays: data.stays || [],
   activeNodeId: data.nodes.find(isScheduledNode)?.id || data.nodes[0]?.id || null,
   activeEdgeId: null,
   activeDay: 'all' as const,
@@ -65,6 +80,8 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
   nodes: [],
   edges: [],
   routeSegments: [],
+  lodgings: [],
+  stays: [],
   activeNodeId: null,
   activeEdgeId: null,
   hoveredEdgeId: null,
@@ -88,6 +105,8 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
     nodes: [],
     edges: [],
     routeSegments: [],
+    lodgings: [],
+    stays: [],
     activeNodeId: null,
     activeEdgeId: null,
     activeDay: 'all',
@@ -223,6 +242,70 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
       });
     } catch (error) {
       set({ saving: false, error: error instanceof Error ? error.message : '删除节点失败' });
+      throw error;
+    }
+  },
+
+  saveLodging: async (lodging) => {
+    const slug = get().selectedTripSlug;
+    if (!slug) return;
+    const exists = get().lodgings.some((item) => item.id === lodging.id);
+    set({ saving: true, error: null });
+    try {
+      const data = await request<TripResponse>(
+        exists ? `/api/trips/${slug}/lodgings/${lodging.id}` : `/api/trips/${slug}/lodgings`,
+        {
+          method: exists ? 'PUT' : 'POST',
+          body: JSON.stringify(lodging),
+        },
+      );
+      set({ ...applyTrip(data), activeDay: get().activeDay, activeNodeId: get().activeNodeId });
+    } catch (error) {
+      set({ saving: false, error: error instanceof Error ? error.message : '保存住宿失败' });
+      throw error;
+    }
+  },
+
+  deleteLodging: async (id) => {
+    const slug = get().selectedTripSlug;
+    if (!slug) return;
+    set({ saving: true, error: null });
+    try {
+      set({ ...applyTrip(await request<TripResponse>(`/api/trips/${slug}/lodgings/${id}`, { method: 'DELETE' })), activeDay: get().activeDay });
+    } catch (error) {
+      set({ saving: false, error: error instanceof Error ? error.message : '删除住宿失败' });
+      throw error;
+    }
+  },
+
+  saveStay: async (stay) => {
+    const slug = get().selectedTripSlug;
+    if (!slug) return;
+    const exists = get().stays.some((item) => item.id === stay.id);
+    set({ saving: true, error: null });
+    try {
+      const data = await request<TripResponse>(
+        exists ? `/api/trips/${slug}/stays/${stay.id}` : `/api/trips/${slug}/stays`,
+        {
+          method: exists ? 'PUT' : 'POST',
+          body: JSON.stringify(stay),
+        },
+      );
+      set({ ...applyTrip(data), activeDay: get().activeDay, activeNodeId: get().activeNodeId });
+    } catch (error) {
+      set({ saving: false, error: error instanceof Error ? error.message : '保存入住区间失败' });
+      throw error;
+    }
+  },
+
+  deleteStay: async (id) => {
+    const slug = get().selectedTripSlug;
+    if (!slug) return;
+    set({ saving: true, error: null });
+    try {
+      set({ ...applyTrip(await request<TripResponse>(`/api/trips/${slug}/stays/${id}`, { method: 'DELETE' })), activeDay: get().activeDay });
+    } catch (error) {
+      set({ saving: false, error: error instanceof Error ? error.message : '删除入住区间失败' });
       throw error;
     }
   },

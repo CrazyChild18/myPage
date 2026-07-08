@@ -2,6 +2,7 @@ import datetime
 import json
 import math
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -46,6 +47,14 @@ EDGE_ROUTE_PREFERENCES = {"recommended", "fastest", "shortest", "avoid_tolls", "
 EDGE_DISPLAY_STATUSES = {"visible", "hidden"}
 EDGE_ANCHORS = {"place", "departure", "arrival"}
 EDGE_LINK_KINDS = {"connection", "transport_leg"}
+ACTIVITY_SUBTYPES = {"sightseeing", "meal", "shopping", "leisure", "tour", "ticketed_event", "layover", "errand", "buffer", "other"}
+LEGACY_ACTIVITY_SUBTYPES = {
+    "sightseeing": "sightseeing",
+    "restaurant": "meal",
+    "shopping": "shopping",
+    "leisure": "leisure",
+    "transfer": "layover",
+}
 AIRPORT_COORDINATES = {
     "北京首都机场": (40.0801, 116.5847),
     "首都机场": (40.0801, 116.5847),
@@ -144,6 +153,7 @@ def init_database():
                 title TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 type TEXT NOT NULL,
+                activity_subtype TEXT NOT NULL DEFAULT 'sightseeing',
                 time TEXT NOT NULL,
                 day INTEGER NOT NULL,
                 date TEXT NOT NULL,
@@ -225,6 +235,40 @@ def init_database():
                 requested_at REAL NOT NULL DEFAULT 0,
                 UNIQUE(trip_slug, link_type, link_id)
             );
+            CREATE TABLE IF NOT EXISTS lodgings (
+                id TEXT PRIMARY KEY,
+                trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                address TEXT NOT NULL DEFAULT '',
+                city TEXT NOT NULL DEFAULT '',
+                lat REAL NOT NULL,
+                lng REAL NOT NULL,
+                timezone TEXT NOT NULL DEFAULT '',
+                image_url TEXT NOT NULL DEFAULT '',
+                image_urls TEXT NOT NULL DEFAULT '[]',
+                booking_site TEXT NOT NULL DEFAULT '',
+                reservation_no TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                place_provider TEXT NOT NULL DEFAULT 'manual',
+                provider_place_id TEXT NOT NULL DEFAULT '',
+                coord_system TEXT NOT NULL DEFAULT 'wgs84'
+            );
+            CREATE TABLE IF NOT EXISTS stays (
+                id TEXT PRIMARY KEY,
+                trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
+                lodging_id TEXT NOT NULL REFERENCES lodgings(id) ON DELETE CASCADE,
+                check_in_day INTEGER NOT NULL,
+                check_in_date TEXT NOT NULL,
+                check_in_time TEXT NOT NULL,
+                check_out_day INTEGER NOT NULL,
+                check_out_date TEXT NOT NULL,
+                check_out_time TEXT NOT NULL,
+                guests INTEGER NOT NULL DEFAULT 0,
+                room_type TEXT NOT NULL DEFAULT '',
+                price TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'planned',
+                notes TEXT NOT NULL DEFAULT ''
+            );
             """
         )
         count = db.execute("SELECT COUNT(*) FROM trips").fetchone()[0]
@@ -237,6 +281,7 @@ def init_database():
         ):
             trip_map_columns_added = add_column_if_missing(db, "trips", column, definition) or trip_map_columns_added
         add_column_if_missing(db, "nodes", "image_url", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(db, "nodes", "activity_subtype", "TEXT NOT NULL DEFAULT 'sightseeing'")
         if add_column_if_missing(db, "nodes", "image_urls", "TEXT NOT NULL DEFAULT '[]'"):
             db.execute(
                 "UPDATE nodes SET image_urls = json_array(image_url) WHERE image_url != ''"
@@ -282,9 +327,13 @@ def init_database():
         if trip_map_columns_added:
             infer_trip_map_defaults(db)
         migrate_journey_routes(db)
+        migrate_accommodations_to_stays(db)
+        migrate_activity_nodes(db)
         if count == 0:
             reset_trip(db)
             migrate_journey_routes(db)
+            migrate_accommodations_to_stays(db)
+            migrate_activity_nodes(db)
 
 
 def airport_coordinates(place):
@@ -322,6 +371,158 @@ def migrate_journey_routes(db):
         )
 
 
+def normalize_activity_subtype(node_type, activity_subtype):
+    subtype = str(activity_subtype or "").strip()
+    if subtype in ACTIVITY_SUBTYPES:
+        return subtype
+    legacy = LEGACY_ACTIVITY_SUBTYPES.get(str(node_type or "").strip())
+    return legacy or "sightseeing"
+
+
+def normalize_node_type(node_type):
+    value = str(node_type or "").strip()
+    if value == "transport":
+        return "transport"
+    if value == "hotel":
+        return "hotel"
+    return "activity"
+
+
+def migrate_activity_nodes(db):
+    db.execute("UPDATE nodes SET activity_subtype = '' WHERE type = 'transport'")
+    db.execute("UPDATE nodes SET activity_subtype = 'other' WHERE type = 'hotel'")
+    for legacy_type, subtype in LEGACY_ACTIVITY_SUBTYPES.items():
+        db.execute(
+            """UPDATE nodes SET type = 'activity', activity_subtype = ?
+            WHERE type = ?""",
+            (subtype, legacy_type),
+        )
+    db.execute(
+        """UPDATE nodes SET activity_subtype = 'sightseeing'
+        WHERE type = 'activity' AND activity_subtype NOT IN
+        ('sightseeing', 'meal', 'shopping', 'leisure', 'tour', 'ticketed_event', 'layover', 'errand', 'buffer', 'other')"""
+    )
+
+
+def trip_day_for_date(trip_start_date, value):
+    try:
+        start = datetime.date.fromisoformat(str(trip_start_date))
+        current = datetime.date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return 0
+    return max(1, (current - start).days + 1)
+
+
+def parse_accommodation_range(dates_text, trip_start_date):
+    year = int(str(trip_start_date or datetime.date.today().year)[:4])
+    matches = re.findall(r"(\d{1,2})\s*月\s*(\d{1,2})\s*日", str(dates_text or ""))
+    if len(matches) < 2:
+        return None
+    start_month, start_day = [int(value) for value in matches[0]]
+    end_month, end_day = [int(value) for value in matches[1]]
+    try:
+        check_in = datetime.date(year, start_month, start_day).isoformat()
+        check_out = datetime.date(year, end_month, end_day).isoformat()
+    except ValueError:
+        return None
+    return {
+        "check_in_date": check_in,
+        "check_out_date": check_out,
+        "check_in_day": trip_day_for_date(trip_start_date, check_in),
+        "check_out_day": trip_day_for_date(trip_start_date, check_out),
+    }
+
+
+def best_lodging_coordinates(db, trip_slug, stay):
+    text = " ".join(
+        str(stay.get(key, ""))
+        for key in ("name", "address", "details")
+    ).lower()
+    rows = db.execute(
+        """SELECT title, description, city, address, lat, lng, timezone, place_provider, provider_place_id, coord_system
+        FROM nodes WHERE trip_slug = ? AND type = 'hotel'""",
+        (trip_slug,),
+    ).fetchall()
+    if not rows:
+        return None
+    scored = []
+    for row in rows:
+        row_text = " ".join(str(row[key] or "") for key in ("title", "description", "city", "address")).lower()
+        score = 0
+        for token in re.findall(r"[\w\u4e00-\u9fff]+", text):
+            if len(token) >= 2 and token in row_text:
+                score += len(token)
+        scored.append((score, row))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored[0][1] if scored and scored[0][0] > 0 else rows[0]
+
+
+def migrate_accommodations_to_stays(db):
+    trips = db.execute("SELECT slug, start_date, accommodations FROM trips").fetchall()
+    for trip in trips:
+        existing_count = db.execute("SELECT COUNT(*) FROM lodgings WHERE trip_slug = ?", (trip["slug"],)).fetchone()[0]
+        if existing_count:
+            continue
+        try:
+            stays = json.loads(trip["accommodations"] or "[]")
+        except json.JSONDecodeError:
+            stays = []
+        for index, stay in enumerate(stays):
+            if not isinstance(stay, dict) or not stay.get("name"):
+                continue
+            matched_node = best_lodging_coordinates(db, trip["slug"], stay)
+            lodging_id = f"lodging-{uuid.uuid4().hex[:12]}"
+            image_urls = [stay.get("image_url")] if stay.get("image_url") else []
+            db.execute(
+                """INSERT INTO lodgings
+                (id, trip_slug, name, address, city, lat, lng, timezone, image_url, image_urls,
+                booking_site, reservation_no, notes, place_provider, provider_place_id, coord_system)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    lodging_id,
+                    trip["slug"],
+                    str(stay.get("name", "")).strip(),
+                    str(stay.get("address", "")).strip(),
+                    str(matched_node["city"] if matched_node else "").strip(),
+                    float(matched_node["lat"] if matched_node else 0),
+                    float(matched_node["lng"] if matched_node else 0),
+                    str(matched_node["timezone"] if matched_node else "").strip(),
+                    image_urls[0] if image_urls else "",
+                    json.dumps(image_urls, ensure_ascii=False),
+                    "爱彼迎",
+                    "",
+                    str(stay.get("details", "")).strip(),
+                    str(matched_node["place_provider"] if matched_node else "manual").strip() or "manual",
+                    str(matched_node["provider_place_id"] if matched_node else "").strip(),
+                    str(matched_node["coord_system"] if matched_node else "wgs84").strip() or "wgs84",
+                ),
+            )
+            date_range = parse_accommodation_range(stay.get("dates", ""), trip["start_date"])
+            if not date_range:
+                continue
+            db.execute(
+                """INSERT INTO stays
+                (id, trip_slug, lodging_id, check_in_day, check_in_date, check_in_time,
+                check_out_day, check_out_date, check_out_time, guests, room_type, price, status, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)""",
+                (
+                    f"stay-{uuid.uuid4().hex[:12]}",
+                    trip["slug"],
+                    lodging_id,
+                    date_range["check_in_day"],
+                    date_range["check_in_date"],
+                    "18:00" if index == 0 else "15:00",
+                    date_range["check_out_day"],
+                    date_range["check_out_date"],
+                    "09:00" if index == 0 else "11:00",
+                    0,
+                    "",
+                    "",
+                    str(stay.get("details", "")).strip(),
+                ),
+            )
+
+
 def reset_trip(db):
     db.execute("DELETE FROM trips WHERE slug = ?", (TRIP["slug"],))
     db.execute(
@@ -337,12 +538,14 @@ def reset_trip(db):
     )
     db.executemany(
         """INSERT INTO nodes
-        (id, trip_slug, title, description, type, time, day, date, city, address, lat, lng, status, image_url, image_urls)
-        VALUES (:id, :trip_slug, :title, :description, :type, :time, :day, :date, :city, :address, :lat, :lng, :status, :image_url, :image_urls)""",
+        (id, trip_slug, title, description, type, activity_subtype, time, day, date, city, address, lat, lng, status, image_url, image_urls)
+        VALUES (:id, :trip_slug, :title, :description, :type, :activity_subtype, :time, :day, :date, :city, :address, :lat, :lng, :status, :image_url, :image_urls)""",
         [
             {
                 **item,
                 "trip_slug": TRIP["slug"],
+                "type": normalize_node_type(item.get("type")),
+                "activity_subtype": normalize_activity_subtype(item.get("type"), item.get("activity_subtype")),
                 "address": "",
                 "image_urls": json.dumps([item["image_url"]] if item.get("image_url") else []),
             }
@@ -379,6 +582,16 @@ def row_to_node(row):
     item = dict(row)
     item["image_urls"] = image_urls_from_source(item)
     return item
+
+
+def row_to_lodging(row):
+    item = dict(row)
+    item["image_urls"] = image_urls_from_source(item)
+    return item
+
+
+def row_to_stay(row):
+    return dict(row)
 
 
 def row_to_edge(row):
@@ -425,7 +638,7 @@ def serialize_trip(db, slug):
     result["nodes"] = [
         row_to_node(row)
         for row in db.execute(
-            """SELECT id, title, description, type, time, day, date, city, address, lat, lng, status,
+            """SELECT id, title, description, type, activity_subtype, time, day, date, city, address, lat, lng, status,
             end_time, end_day, end_date, timezone, image_url, image_urls, transport_mode, departure_place, arrival_place,
             departure_timezone, arrival_timezone, arrival_time,
             arrival_date, service_number, duration, departure_lat, departure_lng, arrival_lat, arrival_lng,
@@ -457,6 +670,37 @@ def serialize_trip(db, slug):
             (slug,),
         )
     ]
+    result["lodgings"] = [
+        row_to_lodging(row)
+        for row in db.execute(
+            """SELECT id, name, address, city, lat, lng, timezone, image_url, image_urls,
+            booking_site, reservation_no, notes, place_provider, provider_place_id, coord_system
+            FROM lodgings WHERE trip_slug = ? ORDER BY name""",
+            (slug,),
+        )
+    ]
+    result["stays"] = [
+        row_to_stay(row)
+        for row in db.execute(
+            """SELECT id, lodging_id, check_in_day, check_in_date, check_in_time,
+            check_out_day, check_out_date, check_out_time, guests, room_type, price, status, notes
+            FROM stays WHERE trip_slug = ? ORDER BY check_in_date, check_in_time""",
+            (slug,),
+        )
+    ]
+    if result["stays"]:
+        lodging_lookup = {item["id"]: item for item in result["lodgings"]}
+        result["accommodations"] = [
+            {
+                "name": lodging_lookup.get(stay["lodging_id"], {}).get("name", "住宿待补充"),
+                "dates": f"{stay['check_in_date']} 入住，{stay['check_out_date']} 退房",
+                "address": lodging_lookup.get(stay["lodging_id"], {}).get("address", ""),
+                "details": lodging_lookup.get(stay["lodging_id"], {}).get("notes", "") or stay.get("notes", ""),
+                "image_url": lodging_lookup.get(stay["lodging_id"], {}).get("image_url", ""),
+            }
+            for stay in result["stays"]
+            if stay.get("status") != "cancelled"
+        ]
     return result
 
 
@@ -1617,6 +1861,9 @@ def local_upload_referenced(db, url):
     for row in db.execute("SELECT image_url, image_urls FROM nodes"):
         if url in image_urls_from_source(row):
             return True
+    for row in db.execute("SELECT image_url, image_urls FROM lodgings"):
+        if url in image_urls_from_source(row):
+            return True
     return False
 
 
@@ -1696,7 +1943,9 @@ def node_payload(payload, existing=None):
     required = ("title", "type", "lat", "lng", "status")
     if any(source.get(key) in (None, "") for key in required):
         raise ValueError("Missing required node fields")
-    node_type = str(source["type"]).strip()
+    raw_node_type = str(source["type"]).strip()
+    node_type = normalize_node_type(raw_node_type)
+    activity_subtype = "" if node_type == "transport" else normalize_activity_subtype(raw_node_type, source.get("activity_subtype"))
     status = str(source["status"]).strip()
     is_unscheduled_point = node_type != "transport" and status == "unscheduled"
     if node_type == "transport" and status == "unscheduled":
@@ -1709,6 +1958,7 @@ def node_payload(payload, existing=None):
         "title": str(source["title"]).strip(),
         "description": str(source.get("description", "")).strip(),
         "type": node_type,
+        "activity_subtype": activity_subtype,
         "time": "" if is_unscheduled_point else str(source["time"]).strip(),
         "day": 0 if is_unscheduled_point else int(source["day"]),
         "date": "" if is_unscheduled_point else str(source["date"]).strip(),
@@ -1746,6 +1996,83 @@ def node_payload(payload, existing=None):
     }
 
 
+def lodging_payload(payload, existing=None):
+    source = {**(dict(existing) if existing else {}), **payload}
+    if not str(source.get("name", "")).strip():
+        raise ValueError("Missing lodging name")
+    if source.get("lat") in (None, "") or source.get("lng") in (None, ""):
+        raise ValueError("Missing lodging coordinates")
+    image_urls = image_urls_from_source({
+        "image_url": source.get("image_url", ""),
+        "image_urls": source.get("image_urls", []),
+    })
+    return {
+        "name": str(source.get("name", "")).strip(),
+        "address": str(source.get("address", "")).strip(),
+        "city": str(source.get("city", "")).strip(),
+        "lat": float(source["lat"]),
+        "lng": float(source["lng"]),
+        "timezone": str(source.get("timezone", "")).strip(),
+        "image_url": image_urls[0] if image_urls else "",
+        "image_urls": json.dumps(image_urls, ensure_ascii=False),
+        "booking_site": str(source.get("booking_site", "")).strip(),
+        "reservation_no": str(source.get("reservation_no", "")).strip(),
+        "notes": str(source.get("notes", "")).strip(),
+        "place_provider": str(source.get("place_provider", "manual")).strip() or "manual",
+        "provider_place_id": str(source.get("provider_place_id", "")).strip(),
+        "coord_system": str(source.get("coord_system", "wgs84")).strip() or "wgs84",
+    }
+
+
+def validate_iso_date(value):
+    try:
+        datetime.date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        raise ValueError("Invalid stay date")
+    return str(value)
+
+
+def stay_payload(db, slug, payload, existing=None):
+    source = {**(dict(existing) if existing else {}), **payload}
+    lodging_id = str(source.get("lodging_id", "")).strip()
+    if not lodging_id:
+        raise ValueError("Missing lodging")
+    if not db.execute("SELECT 1 FROM lodgings WHERE id = ? AND trip_slug = ?", (lodging_id, slug)).fetchone():
+        raise ValueError("Lodging not found")
+
+    trip = db.execute("SELECT start_date FROM trips WHERE slug = ?", (slug,)).fetchone()
+    check_in_date = validate_iso_date(source.get("check_in_date"))
+    check_out_date = validate_iso_date(source.get("check_out_date"))
+    check_in_time = str(source.get("check_in_time", "")).strip()
+    check_out_time = str(source.get("check_out_time", "")).strip()
+    if not re.match(r"^\d{1,2}:\d{2}$", check_in_time) or not re.match(r"^\d{1,2}:\d{2}$", check_out_time):
+        raise ValueError("Invalid stay time")
+    try:
+        start_at = datetime.datetime.fromisoformat(f"{check_in_date}T{check_in_time}")
+        end_at = datetime.datetime.fromisoformat(f"{check_out_date}T{check_out_time}")
+    except ValueError:
+        raise ValueError("Invalid stay date time")
+    if end_at <= start_at:
+        raise ValueError("Check-out must be after check-in")
+    status = str(source.get("status", "planned")).strip() or "planned"
+    if status not in {"planned", "cancelled"}:
+        status = "planned"
+    return {
+        "lodging_id": lodging_id,
+        "check_in_day": int(source.get("check_in_day") or trip_day_for_date(trip["start_date"], check_in_date)),
+        "check_in_date": check_in_date,
+        "check_in_time": check_in_time,
+        "check_out_day": int(source.get("check_out_day") or trip_day_for_date(trip["start_date"], check_out_date)),
+        "check_out_date": check_out_date,
+        "check_out_time": check_out_time,
+        "guests": int(source.get("guests") or 0),
+        "room_type": str(source.get("room_type", "")).strip(),
+        "price": str(source.get("price", "")).strip(),
+        "status": status,
+        "notes": str(source.get("notes", "")).strip(),
+    }
+
+
 def edge_payload(payload, existing):
     source = {**dict(existing), **payload}
     transport_type = str(source.get("transportType") or source.get("transport_type") or "car").strip()
@@ -1777,11 +2104,11 @@ def create_node(slug):
     with connection() as db:
         db.execute(
             """INSERT INTO nodes
-            (id, trip_slug, title, description, type, time, day, date, end_time, end_day, end_date, timezone, city, address, lat, lng, status, image_url, image_urls,
+            (id, trip_slug, title, description, type, activity_subtype, time, day, date, end_time, end_day, end_date, timezone, city, address, lat, lng, status, image_url, image_urls,
             transport_mode, departure_place, arrival_place, departure_timezone, arrival_timezone, arrival_time, arrival_date, service_number, duration,
             departure_lat, departure_lng, arrival_lat, arrival_lng, place_provider, provider_place_id, coord_system,
             departure_place_provider, departure_provider_place_id, arrival_place_provider, arrival_provider_place_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (node_id, slug, *item.values()),
         )
     return jsonify(row_to_node({"id": node_id, **item})), 201
@@ -1803,7 +2130,7 @@ def update_node(slug, node_id):
         next_image_urls = set(image_urls_from_source(item))
         removed_image_urls = list(existing_image_urls - next_image_urls)
         db.execute(
-            """UPDATE nodes SET title=?, description=?, type=?, time=?, day=?, date=?, end_time=?, end_day=?, end_date=?, timezone=?, city=?, address=?, lat=?, lng=?, status=?, image_url=?, image_urls=?,
+            """UPDATE nodes SET title=?, description=?, type=?, activity_subtype=?, time=?, day=?, date=?, end_time=?, end_day=?, end_date=?, timezone=?, city=?, address=?, lat=?, lng=?, status=?, image_url=?, image_urls=?,
             transport_mode=?, departure_place=?, arrival_place=?, departure_timezone=?, arrival_timezone=?, arrival_time=?, arrival_date=?, service_number=?, duration=?,
             departure_lat=?, departure_lng=?, arrival_lat=?, arrival_lng=?, place_provider=?, provider_place_id=?, coord_system=?,
             departure_place_provider=?, departure_provider_place_id=?, arrival_place_provider=?, arrival_provider_place_id=?
@@ -1829,6 +2156,125 @@ def delete_node(slug, node_id):
     if removed_image_urls:
         delete_unreferenced_uploads(removed_image_urls)
     return "", 204
+
+
+@app.post("/api/trips/<slug>/lodgings")
+def create_lodging(slug):
+    payload = request.get_json(force=True)
+    with connection() as db:
+        if not db.execute("SELECT 1 FROM trips WHERE slug = ?", (slug,)).fetchone():
+            return jsonify({"error": "Trip not found"}), 404
+        try:
+            item = lodging_payload(payload)
+        except (ValueError, TypeError) as error:
+            return jsonify({"error": str(error)}), 400
+        lodging_id = payload.get("id") or f"lodging-{os.urandom(6).hex()}"
+        db.execute(
+            """INSERT INTO lodgings
+            (id, trip_slug, name, address, city, lat, lng, timezone, image_url, image_urls,
+            booking_site, reservation_no, notes, place_provider, provider_place_id, coord_system)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (lodging_id, slug, *item.values()),
+        )
+        trip = serialize_trip(db, slug)
+    return jsonify(trip), 201
+
+
+@app.put("/api/trips/<slug>/lodgings/<lodging_id>")
+def update_lodging(slug, lodging_id):
+    payload = request.get_json(force=True)
+    removed_image_urls = []
+    with connection() as db:
+        existing = db.execute("SELECT * FROM lodgings WHERE id = ? AND trip_slug = ?", (lodging_id, slug)).fetchone()
+        if not existing:
+            return jsonify({"error": "Lodging not found"}), 404
+        existing_image_urls = set(image_urls_from_source(existing))
+        try:
+            item = lodging_payload(payload, existing)
+        except (ValueError, TypeError) as error:
+            return jsonify({"error": str(error)}), 400
+        next_image_urls = set(image_urls_from_source(item))
+        removed_image_urls = list(existing_image_urls - next_image_urls)
+        db.execute(
+            """UPDATE lodgings SET name=?, address=?, city=?, lat=?, lng=?, timezone=?,
+            image_url=?, image_urls=?, booking_site=?, reservation_no=?, notes=?,
+            place_provider=?, provider_place_id=?, coord_system=?
+            WHERE id=? AND trip_slug=?""",
+            (*item.values(), lodging_id, slug),
+        )
+        trip = serialize_trip(db, slug)
+    if removed_image_urls:
+        delete_unreferenced_uploads(removed_image_urls)
+    return jsonify(trip)
+
+
+@app.delete("/api/trips/<slug>/lodgings/<lodging_id>")
+def delete_lodging(slug, lodging_id):
+    removed_image_urls = []
+    with connection() as db:
+        existing = db.execute("SELECT image_url, image_urls FROM lodgings WHERE id = ? AND trip_slug = ?", (lodging_id, slug)).fetchone()
+        if not existing:
+            return jsonify({"error": "Lodging not found"}), 404
+        removed_image_urls = image_urls_from_source(existing)
+        db.execute("DELETE FROM lodgings WHERE id = ? AND trip_slug = ?", (lodging_id, slug))
+        trip = serialize_trip(db, slug)
+    if removed_image_urls:
+        delete_unreferenced_uploads(removed_image_urls)
+    return jsonify(trip)
+
+
+@app.post("/api/trips/<slug>/stays")
+def create_stay(slug):
+    payload = request.get_json(force=True)
+    with connection() as db:
+        if not db.execute("SELECT 1 FROM trips WHERE slug = ?", (slug,)).fetchone():
+            return jsonify({"error": "Trip not found"}), 404
+        try:
+            item = stay_payload(db, slug, payload)
+        except (ValueError, TypeError) as error:
+            return jsonify({"error": str(error)}), 400
+        stay_id = payload.get("id") or f"stay-{os.urandom(6).hex()}"
+        db.execute(
+            """INSERT INTO stays
+            (id, trip_slug, lodging_id, check_in_day, check_in_date, check_in_time,
+            check_out_day, check_out_date, check_out_time, guests, room_type, price, status, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (stay_id, slug, *item.values()),
+        )
+        trip = serialize_trip(db, slug)
+    return jsonify(trip), 201
+
+
+@app.put("/api/trips/<slug>/stays/<stay_id>")
+def update_stay(slug, stay_id):
+    payload = request.get_json(force=True)
+    with connection() as db:
+        existing = db.execute("SELECT * FROM stays WHERE id = ? AND trip_slug = ?", (stay_id, slug)).fetchone()
+        if not existing:
+            return jsonify({"error": "Stay not found"}), 404
+        try:
+            item = stay_payload(db, slug, payload, existing)
+        except (ValueError, TypeError) as error:
+            return jsonify({"error": str(error)}), 400
+        db.execute(
+            """UPDATE stays SET lodging_id=?, check_in_day=?, check_in_date=?, check_in_time=?,
+            check_out_day=?, check_out_date=?, check_out_time=?, guests=?, room_type=?,
+            price=?, status=?, notes=?
+            WHERE id=? AND trip_slug=?""",
+            (*item.values(), stay_id, slug),
+        )
+        trip = serialize_trip(db, slug)
+    return jsonify(trip)
+
+
+@app.delete("/api/trips/<slug>/stays/<stay_id>")
+def delete_stay(slug, stay_id):
+    with connection() as db:
+        if not db.execute("SELECT 1 FROM stays WHERE id = ? AND trip_slug = ?", (stay_id, slug)).fetchone():
+            return jsonify({"error": "Stay not found"}), 404
+        db.execute("DELETE FROM stays WHERE id = ? AND trip_slug = ?", (stay_id, slug))
+        trip = serialize_trip(db, slug)
+    return jsonify(trip)
 
 
 @app.put("/api/trips/<slug>/edges/<edge_id>")

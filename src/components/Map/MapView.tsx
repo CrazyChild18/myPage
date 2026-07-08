@@ -8,48 +8,41 @@ import { CircleMarker, MapContainer, TileLayer, Marker, Polyline, Popup, Tooltip
 import L from 'leaflet';
 import ImagePreviewModal from '../ImagePreviewModal/ImagePreviewModal';
 import { useItineraryStore } from '../../store/useItineraryStore';
-import { ItineraryNode, ItineraryEdge, RouteSegment, TripSummary } from '../../types';
-import { isScheduledNode } from '../../utils/itinerary';
+import { ItineraryNode, ItineraryEdge, Lodging, RouteSegment, Stay, TripSummary } from '../../types';
+import { activitySubtypeColors, activitySubtypeOf, isScheduledNode, itineraryTypeLabel } from '../../utils/itinerary';
 import { Plane, Car, Train, Navigation, Compass } from 'lucide-react';
 import { toProviderPoint } from '../../map/coordinates';
 import { amapBrowserKey, amapSecurityCode, googleMapsBrowserKey, mapProviderForTrip, mapProviderLabel } from '../../map/provider';
 import { loadAmap, loadGoogleMaps } from '../../map/scriptLoaders';
 
 type PreviewState = { node: ItineraryNode; index: number } | null;
+type VisibleLodgingMarker = { lodging: Lodging; stays: Stay[] };
 const imagesOf = (node: ItineraryNode) => node.image_urls?.length ? node.image_urls : node.image_url ? [node.image_url] : [];
+const lodgingImagesOf = (lodging: Lodging) => lodging.image_urls?.length ? lodging.image_urls : lodging.image_url ? [lodging.image_url] : [];
 
-const nodeColor = (node: Pick<ItineraryNode, 'type'>) => {
-  switch (node.type) {
-    case 'hotel': return '#10b981';
-    case 'restaurant': return '#f43f5e';
-    case 'sightseeing': return '#8b5cf6';
-    case 'transfer': return '#0ea5e9';
-    case 'leisure': return '#f59e0b';
-    case 'shopping': return '#ec4899';
-    case 'transport':
-    default: return '#06b6d4';
-  }
+const escapeHtml = (value?: string | number) => String(value ?? '')
+  .replaceAll('&', '&amp;')
+  .replaceAll('<', '&lt;')
+  .replaceAll('>', '&gt;')
+  .replaceAll('"', '&quot;')
+  .replaceAll("'", '&#039;');
+
+const nodeColor = (node: Pick<ItineraryNode, 'type' | 'activity_subtype'>) => {
+  if (node.type === 'transport') return '#06b6d4';
+  if (node.type === 'hotel') return '#10b981';
+  return activitySubtypeColors[activitySubtypeOf(node)];
 };
 
-const nodeTypeLabel = (node: Pick<ItineraryNode, 'type'>) => {
-  switch (node.type) {
-    case 'hotel': return '酒店';
-    case 'restaurant': return '餐厅';
-    case 'sightseeing': return '景点';
-    case 'transfer': return '转机';
-    case 'leisure': return '休闲';
-    case 'shopping': return '购物';
-    case 'transport':
-    default: return '交通';
-  }
-};
+const nodeTypeLabel = (node: Pick<ItineraryNode, 'type' | 'activity_subtype'>) =>
+  node.type === 'hotel' ? '酒店' : itineraryTypeLabel(node);
 
 // Custom icons setup using dynamic SVG inside DivIcon
 const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
   let color = '#3b82f6'; // default blue
   let iconSvg = '';
+  const visualType = node.type === 'transport' || node.type === 'hotel' ? node.type : activitySubtypeOf(node);
 
-  switch (node.type) {
+  switch (visualType) {
     case 'hotel':
       color = nodeColor(node);
       iconSvg = `
@@ -62,7 +55,7 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
         </svg>
       `;
       break;
-    case 'restaurant':
+    case 'meal':
       color = nodeColor(node);
       iconSvg = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-white">
@@ -92,7 +85,7 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
         </svg>
       `;
       break;
-    case 'transfer':
+    case 'layover':
       color = nodeColor(node);
       iconSvg = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-white">
@@ -139,6 +132,27 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
         <!-- Tiny arrow helper -->
         <div class="absolute -bottom-1 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-t-[6px] transition-all" 
              style="border-t-color: ${isSelected ? '#ffffff' : color};"></div>
+      </div>
+    `,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size + 4],
+    popupAnchor: [0, -size],
+  });
+};
+
+const createLodgingMarkerIcon = () => {
+  const size = 36;
+  return L.divIcon({
+    className: 'lodging-leaflet-marker-wrapper',
+    html: `
+      <div class="relative flex items-center justify-center rounded-full box-border border-2 border-white/95 shadow-[0_10px_24px_rgba(16,185,129,0.35)] transition-all duration-300 pointer-events-auto"
+           style="background:#10b981;width:${size}px;height:${size}px;">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:17px;height:17px">
+          <path d="M3 10V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5" />
+          <path d="M21 21v-4a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v4" />
+          <path d="M2 11h20" />
+        </svg>
+        <div class="absolute -bottom-1 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-t-[6px]" style="border-top-color:#10b981"></div>
       </div>
     `,
     iconSize: [size, size],
@@ -541,21 +555,9 @@ const ItineraryNodeMarker: React.FC<ItineraryNodeMarkerProps> = ({
           <div className="mb-1.5 flex items-center space-x-2">
             <span
               className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
-              style={{
-                background: node.type === 'hotel' ? '#10b981' :
-                            node.type === 'restaurant' ? '#f43f5e' :
-                            node.type === 'sightseeing' ? '#8b5cf6' :
-                            node.type === 'transfer' ? '#0ea5e9' :
-                            node.type === 'leisure' ? '#f59e0b' :
-                            node.type === 'shopping' ? '#ec4899' : '#06b6d4'
-              }}
+              style={{ background: nodeColor(node) }}
             >
-              {node.type === 'hotel' ? '酒店' :
-               node.type === 'restaurant' ? '餐厅' :
-               node.type === 'sightseeing' ? '景点' :
-               node.type === 'transfer' ? '转机' :
-               node.type === 'leisure' ? '休闲' :
-               node.type === 'shopping' ? '购物' : '交通'}
+              {nodeTypeLabel(node)}
             </span>
             <span className="font-mono text-[11px] font-semibold text-slate-500">
               Day {node.day} · {node.date.slice(5)} · {node.time}
@@ -578,6 +580,7 @@ type ProviderMapCanvasProps = {
   selectedHomeSlug: string | null;
   visibleNodes: ItineraryNode[];
   visibleTransportRoutes: ItineraryNode[];
+  visibleLodgings: VisibleLodgingMarker[];
   visibleEdges: ItineraryEdge[];
   routeSegments: RouteSegment[];
   nodes: ItineraryNode[];
@@ -622,6 +625,27 @@ const nodeInfoHtml = (node: ItineraryNode) => {
   `;
 };
 
+const lodgingStayText = (stays: Stay[]) =>
+  stays
+    .map((stay) => `D${stay.check_in_day}-D${stay.check_out_day} · ${stay.check_in_date.slice(5)} 入住`)
+    .join(' / ');
+
+const lodgingInfoHtml = (lodging: Lodging, stays: Stay[]) => {
+  const image = lodgingImagesOf(lodging)[0];
+  return `
+    <div style="max-width:230px;font-family:Inter,system-ui,sans-serif">
+      ${image ? `<img src="${escapeHtml(image)}" alt="" style="width:100%;height:92px;object-fit:cover;border-radius:12px;margin-bottom:8px" />` : ''}
+      <div style="font-weight:900;color:#0f172a;font-size:13px;line-height:1.25">${escapeHtml(lodging.name)}</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+        <span style="border-radius:999px;background:#10b981;color:white;padding:2px 8px;font-size:10px;font-weight:800">住宿</span>
+        <span style="font-size:10px;color:#64748b;font-weight:700">${escapeHtml(lodging.booking_site || '住宿')}</span>
+      </div>
+      <div style="margin-top:6px;color:#475569;font-size:11px;line-height:1.45">${escapeHtml(lodging.address || lodging.city || '地址待补充')}</div>
+      ${stays.length ? `<div style="margin-top:6px;color:#047857;font-size:10px;font-weight:800">${escapeHtml(lodgingStayText(stays))}</div>` : ''}
+    </div>
+  `;
+};
+
 const transportInfoHtml = (route: ItineraryNode) => `
   <div style="min-width:190px;font-family:Inter,system-ui,sans-serif">
     <div style="font-size:12px;font-weight:900;color:#0369a1">${route.service_number || '区间交通'}</div>
@@ -637,6 +661,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   selectedHomeSlug,
   visibleNodes,
   visibleTransportRoutes,
+  visibleLodgings,
   visibleEdges,
   routeSegments,
   nodes,
@@ -898,6 +923,29 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             overlaysRef.current.push(line);
           });
 
+          visibleLodgings.forEach(({ lodging, stays }) => {
+            remember(lodging.lat, lodging.lng);
+            const marker = new maps.Marker({
+              map: mapRef.current,
+              position: { lat: lodging.lat, lng: lodging.lng },
+              title: lodging.name,
+              icon: {
+                path: maps.SymbolPath.CIRCLE,
+                fillColor: '#10b981',
+                fillOpacity: 1,
+                strokeColor: '#ffffff',
+                strokeWeight: 3,
+                scale: 11,
+              },
+              label: { text: '宿', color: '#ffffff', fontWeight: '900', fontSize: '11px' },
+            });
+            marker.addListener('click', () => {
+              infoRef.current.setContent(lodgingInfoHtml(lodging, stays));
+              infoRef.current.open(mapRef.current, marker);
+            });
+            overlaysRef.current.push(marker);
+          });
+
           visibleNodes.forEach((node) => {
             remember(node.lat, node.lng);
             const marker = new maps.Marker({
@@ -930,7 +978,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleNodes, visibleTransportRoutes]);
+  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -954,6 +1002,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   selectedHomeSlug,
   visibleNodes,
   visibleTransportRoutes,
+  visibleLodgings,
   visibleEdges,
   routeSegments,
   nodes,
@@ -1206,6 +1255,22 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
             overlaysRef.current.push(halo);
             overlaysRef.current.push(line);
           });
+          visibleLodgings.forEach(({ lodging, stays }) => {
+            const position = remember(lodging.lat, lodging.lng);
+            const marker = new AMap.Marker({
+              map: mapRef.current,
+              position,
+              title: lodging.name,
+              content: '<div style="width:32px;height:32px;border-radius:999px;background:#10b981;border:3px solid white;box-shadow:0 10px 24px rgba(16,185,129,.35);display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:900">宿</div>',
+              offset: new AMap.Pixel(-16, -16),
+            });
+            marker.on('click', () => {
+              hoverInfoRef.current.setContent(lodgingInfoHtml(lodging, stays));
+              hoverInfoRef.current.open(mapRef.current, position);
+            });
+            overlaysRef.current.push(marker);
+          });
+
           visibleNodes.forEach((node) => {
             const position = remember(node.lat, node.lng);
             const marker = new AMap.Marker({
@@ -1226,7 +1291,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleNodes, visibleTransportRoutes]);
+  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -1249,6 +1314,8 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     nodes, 
     edges, 
     routeSegments,
+    lodgings,
+    stays,
     activeNodeId, 
     activeEdgeId,
     setActiveNodeId, 
@@ -1260,9 +1327,10 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
 
   const [preview, setPreview] = useState<PreviewState>(null);
   const routeSegmentLookup = new Map(routeSegments.map((segment) => [routeSegmentKey(segment.linkType, segment.linkId), segment]));
+  const lodgingById = new Map(lodgings.map((lodging) => [lodging.id, lodging]));
 
   // Filter nodes according to current activeDay selector
-  const visibleNodes = nodes.filter(n => isScheduledNode(n) && n.type !== 'transport' && (activeDay === 'all' || n.day === activeDay));
+  const visibleNodes = nodes.filter(n => isScheduledNode(n) && n.type !== 'transport' && n.type !== 'hotel' && (activeDay === 'all' || n.day === activeDay));
   const visibleTransportRoutes = nodes.filter((node) =>
     isScheduledNode(node) &&
     node.type === 'transport' &&
@@ -1272,6 +1340,19 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     node.arrival_lng != null &&
     (activeDay === 'all' || node.day === activeDay)
   );
+  const visibleLodgings = Array.from(stays
+    .filter((stay) =>
+      stay.status !== 'cancelled' &&
+      (activeDay === 'all' || (typeof activeDay === 'number' && stay.check_in_day <= activeDay && stay.check_out_day >= activeDay))
+    )
+    .reduce<Map<string, VisibleLodgingMarker>>((lookup, stay) => {
+      const lodging = lodgingById.get(stay.lodging_id);
+      if (!lodging) return lookup;
+      const current = lookup.get(lodging.id);
+      if (current) current.stays.push(stay);
+      else lookup.set(lodging.id, { lodging, stays: [stay] });
+      return lookup;
+    }, new Map()).values());
 
   // Filter route links where both end-events exist and either side belongs to the active day.
   const visibleEdges = edges.filter(edge => {
@@ -1288,6 +1369,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
 
   const fitPoints: [number, number][] = [
     ...visibleNodes.map((node) => [node.lat, node.lng] as [number, number]),
+    ...visibleLodgings.map(({ lodging }) => [lodging.lat, lodging.lng] as [number, number]),
     ...visibleTransportRoutes.flatMap((node) =>
       routePathForTransport(node, routeSegmentLookup.get(routeSegmentKey('transport_node', node.id)))
     ),
@@ -1336,6 +1418,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     selectedHomeSlug,
     visibleNodes,
     visibleTransportRoutes,
+    visibleLodgings,
     visibleEdges: renderEdges,
     routeSegments,
     nodes,
@@ -1510,6 +1593,33 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
             onSelect={() => setActiveNodeId(node.id)}
             onPreview={setPreview}
           />
+        ))}
+
+        {mode === 'trip' && visibleLodgings.map(({ lodging, stays }) => (
+          <Marker
+            key={`lodging-${lodging.id}`}
+            position={[lodging.lat, lodging.lng]}
+            icon={createLodgingMarkerIcon()}
+          >
+            <Tooltip direction="top" offset={[0, -32]} opacity={0.96}>
+              <div className="min-w-32 py-0.5">
+                <div className="text-xs font-black text-slate-900">{lodging.name}</div>
+                <div className="mt-1 text-[10px] font-semibold text-emerald-700">{lodgingStayText(stays)}</div>
+              </div>
+            </Tooltip>
+            <Popup minWidth={230}>
+              <div className="space-y-2">
+                {lodgingImagesOf(lodging)[0] && (
+                  <img src={lodgingImagesOf(lodging)[0]} alt="" className="h-24 w-full rounded-xl object-cover" />
+                )}
+                <div>
+                  <div className="text-sm font-black text-slate-900">{lodging.name}</div>
+                  <div className="mt-1 text-[11px] font-bold text-slate-500">{lodging.address || lodging.city || '地址待补充'}</div>
+                  <div className="mt-1 text-[10px] font-black text-emerald-700">{lodgingStayText(stays)}</div>
+                </div>
+              </div>
+            </Popup>
+          </Marker>
         ))}
       </MapContainer>
       </ProviderMissingFallback>
