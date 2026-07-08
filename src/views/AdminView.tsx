@@ -27,7 +27,7 @@ import {
 import LocationPicker from '../components/LocationPicker/LocationPicker';
 import MapView from '../components/Map/MapView';
 import { useItineraryStore } from '../store/useItineraryStore';
-import { EdgeDisplayStatus, EdgeTransportType, ItineraryEdge, ItineraryNode, ItineraryType, TransportMode } from '../types';
+import { EdgeAnchor, EdgeDisplayStatus, EdgeTransportType, ItineraryEdge, ItineraryNode, ItineraryType, TransportMode } from '../types';
 import { mapProviderForTrip } from '../map/provider';
 import { compareItineraryNodes, isScheduledNode, isUnscheduledPointNode } from '../utils/itinerary';
 import {
@@ -98,9 +98,26 @@ const typeLabels: Record<ItineraryType, string> = {
 const edgeTransportLabel = (type?: EdgeTransportType) =>
   edgeTransportOptions.find((option) => option.value === type)?.label || '接续';
 
-const defaultEdgeTransportType = (source?: ItineraryNode | null, target?: ItineraryNode | null): EdgeTransportType => {
+const edgeAnchorPoint = (node: ItineraryNode, anchor?: EdgeAnchor) => {
+  if (anchor === 'departure' && node.departure_lat != null && node.departure_lng != null) {
+    return { lat: node.departure_lat, lng: node.departure_lng };
+  }
+  if (anchor === 'arrival' && node.arrival_lat != null && node.arrival_lng != null) {
+    return { lat: node.arrival_lat, lng: node.arrival_lng };
+  }
+  return { lat: node.lat, lng: node.lng };
+};
+
+const defaultEdgeTransportType = (
+  source?: ItineraryNode | null,
+  target?: ItineraryNode | null,
+  sourceAnchor?: EdgeAnchor,
+  targetAnchor?: EdgeAnchor,
+): EdgeTransportType => {
   if (!source || !target) return 'car';
-  const km = Math.sqrt((source.lat - target.lat) ** 2 + (source.lng - target.lng) ** 2) * 85;
+  const sourcePoint = edgeAnchorPoint(source, sourceAnchor);
+  const targetPoint = edgeAnchorPoint(target, targetAnchor);
+  const km = Math.sqrt((sourcePoint.lat - targetPoint.lat) ** 2 + (sourcePoint.lng - targetPoint.lng) ** 2) * 85;
   return km < 2 ? 'walk' : 'car';
 };
 
@@ -1192,7 +1209,12 @@ export default function AdminView() {
 
   const followAutoRoute = async () => {
     if (!editingEdge) return;
-    const autoTransportType = defaultEdgeTransportType(editingEdgeSource, editingEdgeTarget);
+    const autoTransportType = defaultEdgeTransportType(
+      editingEdgeSource,
+      editingEdgeTarget,
+      editingEdge.sourceAnchor,
+      editingEdge.targetAnchor,
+    );
     try {
       await updateEdge(editingEdge.id, {
         transportType: autoTransportType,
@@ -2291,7 +2313,7 @@ export default function AdminView() {
             {currentDayRouteEdges.length > 0 && (
               <div className="max-h-32 space-y-1 overflow-y-auto border-t border-slate-200 bg-white/80 p-2">
                 <div className="mb-1 flex items-center justify-between text-[9px] font-black text-slate-400">
-                  <span>D{currentDay} 地点接续</span>
+                  <span>D{currentDay} 事件接续</span>
                   <span>{currentDayRouteEdges.length} 段</span>
                 </div>
                 {currentDayRouteEdges.map(({ edge, source, target, segment }) => {
@@ -2366,7 +2388,7 @@ export default function AdminView() {
               <div className="rounded-2xl border border-rose-100 bg-rose-50/70 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-[10px] font-black text-rose-700">地点接续路线</div>
+                    <div className="text-[10px] font-black text-rose-700">事件接续路线</div>
                     <div className="mt-1 truncate text-xs font-black text-slate-900">{editingEdgeSource?.title || '起点'}</div>
                     <div className="mt-0.5 truncate text-[10px] font-bold text-slate-500">→ {editingEdgeTarget?.title || '终点'}</div>
                   </div>

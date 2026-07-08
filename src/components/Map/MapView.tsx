@@ -251,13 +251,23 @@ const routePathForTransport = (node: ItineraryNode, segment?: RouteSegment | nul
   return geometry.length >= 2 ? geometry : transportPath(node);
 };
 
+const nodeAnchorPoint = (node: ItineraryNode, anchor?: string): [number, number] => {
+  if (anchor === 'departure' && node.departure_lat != null && node.departure_lng != null) {
+    return [node.departure_lat, node.departure_lng];
+  }
+  if (anchor === 'arrival' && node.arrival_lat != null && node.arrival_lng != null) {
+    return [node.arrival_lat, node.arrival_lng];
+  }
+  return [node.lat, node.lng];
+};
+
 const routePathForEdge = (edge: ItineraryEdge, nodes: ItineraryNode[], segment?: RouteSegment | null, includeProviderGeometry = false): [number, number][] => {
   const geometry = cleanGeometry(segment, includeProviderGeometry);
   if (geometry.length >= 2) return geometry;
   const srcNode = nodes.find(n => n.id === edge.source);
   const tarNode = nodes.find(n => n.id === edge.target);
   if (!srcNode || !tarNode) return [];
-  return [[srcNode.lat, srcNode.lng], [tarNode.lat, tarNode.lng]];
+  return [nodeAnchorPoint(srcNode, edge.sourceAnchor), nodeAnchorPoint(tarNode, edge.targetAnchor)];
 };
 
 const pathMidpoint = (path: [number, number][]): [number, number] => path[Math.floor(path.length / 2)] || [0, 0];
@@ -361,7 +371,7 @@ const transportRouteLabel = (route: ItineraryNode, segment?: RouteSegment) => ({
 
 const edgeRouteLabel = (edge: ItineraryEdge, segment?: RouteSegment) => ({
   title: edgeTransportLabel(edge.transportType),
-  subtitle: '地点接续路线',
+  subtitle: edge.linkKind === 'transport_leg' ? '交通区间路线' : '事件接续路线',
   metric: [segment?.distanceText || edge.distance, segment?.durationText || edge.duration].filter(Boolean).join(' · '),
   warning: segment?.status === 'failed' ? '真实路线暂不可用，已回退直线' : '',
 });
@@ -1129,20 +1139,25 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     node.arrival_lng != null &&
     (activeDay === 'all' || node.day === activeDay)
   );
+
+  // Filter route links where both end-events exist and either side belongs to the active day.
+  const visibleEdges = edges.filter(edge => {
+    if (edge.displayStatus === 'hidden') return false;
+    const source = nodes.find((node) => node.id === edge.source && isScheduledNode(node));
+    const target = nodes.find((node) => node.id === edge.target && isScheduledNode(node));
+    if (!source || !target) return false;
+    return activeDay === 'all' || source.day === activeDay || target.day === activeDay;
+  });
+
   const fitPoints: [number, number][] = [
     ...visibleNodes.map((node) => [node.lat, node.lng] as [number, number]),
     ...visibleTransportRoutes.flatMap((node) =>
       routePathForTransport(node, routeSegmentLookup.get(routeSegmentKey('transport_node', node.id)))
     ),
+    ...visibleEdges.flatMap((edge) =>
+      routePathForEdge(edge, nodes, routeSegmentLookup.get(routeSegmentKey('edge', edge.id)))
+    ),
   ];
-
-  // Filter edges where both end-nodes are currently visible/valid
-  const visibleEdges = edges.filter(edge => {
-    if (edge.displayStatus === 'hidden') return false;
-    const srcExists = visibleNodes.some(n => n.id === edge.source && n.type !== 'transfer');
-    const tarExists = visibleNodes.some(n => n.id === edge.target && n.type !== 'transfer');
-    return srcExists && tarExists;
-  });
 
   // Calculate midpoints to draw transport-specific popup helper
   const getEdgeCoordinatesAndMeta = (edge: ItineraryEdge) => {
@@ -1229,7 +1244,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
       {mode === 'trip' && <div className="absolute bottom-7 left-[calc(33.333%+2rem)] z-[9999] hidden items-center gap-3 rounded-full border border-white/70 bg-white/80 px-3 py-2 text-[9px] font-bold text-slate-600 shadow-lg backdrop-blur-md md:flex">
         <span className="flex items-center gap-1.5"><span className="h-0.5 w-6 border-t-2 border-dashed border-blue-700" /><Plane className="h-3 w-3 text-blue-700" />航班/跨城</span>
         <span className="flex items-center gap-1.5"><span className="h-1 w-6 rounded-full bg-pink-600 shadow-[0_0_0_2px_rgba(255,255,255,.9)]" /><Car className="h-3 w-3 text-pink-600" />地面交通</span>
-        <span className="flex items-center gap-1.5"><span className="h-1 w-6 rounded-full bg-rose-600 shadow-[0_0_0_2px_rgba(255,255,255,.9)]" />地点接续</span>
+        <span className="flex items-center gap-1.5"><span className="h-1 w-6 rounded-full bg-rose-600 shadow-[0_0_0_2px_rgba(255,255,255,.9)]" />事件接续</span>
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-sky-500 ring-2 ring-white" />区间端点 / 转机</span>
       </div>}
 

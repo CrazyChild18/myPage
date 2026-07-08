@@ -1,3 +1,4 @@
+import datetime
 import json
 import math
 import os
@@ -43,6 +44,8 @@ GEOCODE_CACHE = {}
 EDGE_TRANSPORT_TYPES = {"walk", "car", "taxi", "transit", "bus", "subway", "train", "high_speed_rail", "ferry", "other"}
 EDGE_ROUTE_PREFERENCES = {"recommended", "fastest", "shortest", "avoid_tolls", "avoid_highways"}
 EDGE_DISPLAY_STATUSES = {"visible", "hidden"}
+EDGE_ANCHORS = {"place", "departure", "arrival"}
+EDGE_LINK_KINDS = {"connection", "transport_leg"}
 AIRPORT_COORDINATES = {
     "北京首都机场": (40.0801, 116.5847),
     "首都机场": (40.0801, 116.5847),
@@ -181,6 +184,9 @@ def init_database():
                 trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
                 source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
                 target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                source_anchor TEXT NOT NULL DEFAULT 'place',
+                target_anchor TEXT NOT NULL DEFAULT 'place',
+                link_kind TEXT NOT NULL DEFAULT 'connection',
                 transport_type TEXT NOT NULL DEFAULT 'car',
                 route_preference TEXT NOT NULL DEFAULT 'recommended',
                 is_manual INTEGER NOT NULL DEFAULT 0,
@@ -264,6 +270,9 @@ def init_database():
         ):
             add_column_if_missing(db, "nodes", column, definition)
         for column, definition in (
+            ("source_anchor", "TEXT NOT NULL DEFAULT 'place'"),
+            ("target_anchor", "TEXT NOT NULL DEFAULT 'place'"),
+            ("link_kind", "TEXT NOT NULL DEFAULT 'connection'"),
             ("route_preference", "TEXT NOT NULL DEFAULT 'recommended'"),
             ("is_manual", "INTEGER NOT NULL DEFAULT 0"),
             ("is_locked", "INTEGER NOT NULL DEFAULT 0"),
@@ -290,10 +299,6 @@ def migrate_journey_routes(db):
     db.execute(
         """UPDATE nodes SET type = 'transfer'
         WHERE type = 'leisure' AND (title LIKE '%转机%' OR title LIKE '%中转%')"""
-    )
-    db.execute(
-        """DELETE FROM edges WHERE source IN (SELECT id FROM nodes WHERE type = 'transfer')
-        OR target IN (SELECT id FROM nodes WHERE type = 'transfer')"""
     )
     flights = db.execute(
         """SELECT id, departure_place, arrival_place, departure_lat, departure_lng, arrival_lat, arrival_lng
@@ -379,6 +384,9 @@ def row_to_node(row):
 def row_to_edge(row):
     item = dict(row)
     item["transportType"] = item.pop("transport_type")
+    item["sourceAnchor"] = item.pop("source_anchor", "place")
+    item["targetAnchor"] = item.pop("target_anchor", "place")
+    item["linkKind"] = item.pop("link_kind", "connection")
     item["routePreference"] = item.pop("route_preference", "recommended")
     item["isManual"] = bool(item.pop("is_manual", 0))
     item["isLocked"] = bool(item.pop("is_locked", 0))
@@ -431,7 +439,8 @@ def serialize_trip(db, slug):
     result["edges"] = [
         row_to_edge(row)
         for row in db.execute(
-            """SELECT id, source, target, transport_type, route_preference, is_manual,
+            """SELECT id, source, target, source_anchor, target_anchor, link_kind,
+            transport_type, route_preference, is_manual,
             is_locked, display_status, duration, distance
             FROM edges WHERE trip_slug = ? ORDER BY rowid""",
             (slug,),
@@ -907,6 +916,96 @@ def route_mode(value):
     return "drive"
 
 
+def edge_anchor_point(row, prefix, anchor):
+    anchor = anchor if anchor in EDGE_ANCHORS else "place"
+    if anchor == "departure":
+        lat = row[f"{prefix}_departure_lat"]
+        lng = row[f"{prefix}_departure_lng"]
+        if lat is not None and lng is not None:
+            return float(lat), float(lng)
+    if anchor == "arrival":
+        lat = row[f"{prefix}_arrival_lat"]
+        lng = row[f"{prefix}_arrival_lng"]
+        if lat is not None and lng is not None:
+            return float(lat), float(lng)
+    return float(row[f"{prefix}_lat"]), float(row[f"{prefix}_lng"])
+
+
+def node_anchor_point(node, anchor):
+    anchor = anchor if anchor in EDGE_ANCHORS else "place"
+    if anchor == "departure" and node["departure_lat"] is not None and node["departure_lng"] is not None:
+        return float(node["departure_lat"]), float(node["departure_lng"])
+    if anchor == "arrival" and node["arrival_lat"] is not None and node["arrival_lng"] is not None:
+        return float(node["arrival_lat"]), float(node["arrival_lng"])
+    return float(node["lat"]), float(node["lng"])
+
+
+def parse_minutes(value):
+    try:
+        hour, minute = str(value or "00:00").split(":", 1)
+        return max(0, min(23 * 60 + 59, int(hour) * 60 + int(minute)))
+    except (ValueError, TypeError):
+        return 0
+
+
+def date_delta_days(start, end):
+    if not start or not end:
+        return None
+    try:
+        start_year, start_month, start_day = [int(item) for item in str(start).split("-")]
+        end_year, end_month, end_day = [int(item) for item in str(end).split("-")]
+    except ValueError:
+        return None
+    try:
+        return (datetime.date(end_year, end_month, end_day) - datetime.date(start_year, start_month, start_day)).days
+    except ValueError:
+        return None
+
+
+def event_entry_day(node):
+    return int(node["day"] or 0)
+
+
+def event_exit_day(node):
+    if node["type"] == "transport":
+        if node["arrival_date"]:
+            delta = date_delta_days(node["date"], node["arrival_date"])
+            if delta is not None:
+                return max(int(node["day"] or 0), int(node["day"] or 0) + max(0, delta))
+        if node["arrival_time"] and parse_minutes(node["arrival_time"]) < parse_minutes(node["time"]):
+            return int(node["day"] or 0) + 1
+    if node["end_day"] and int(node["end_day"]) >= int(node["day"] or 0):
+        return int(node["end_day"])
+    if node["end_date"]:
+        delta = date_delta_days(node["date"], node["end_date"])
+        if delta is not None:
+            return max(int(node["day"] or 0), int(node["day"] or 0) + max(0, delta))
+    return int(node["day"] or 0)
+
+
+def event_entry_anchor(node):
+    return "departure" if node["type"] == "transport" else "place"
+
+
+def event_exit_anchor(node):
+    return "arrival" if node["type"] == "transport" else "place"
+
+
+def event_entry_absolute(node):
+    return (event_entry_day(node) - 1) * 24 * 60 + parse_minutes(node["time"])
+
+
+def event_exit_absolute(node):
+    if node["type"] == "transport":
+        return (event_exit_day(node) - 1) * 24 * 60 + parse_minutes(node["arrival_time"] or node["end_time"] or node["time"])
+    return (event_exit_day(node) - 1) * 24 * 60 + parse_minutes(node["end_time"] or node["time"])
+
+
+def default_connection_transport_type(source_point, target_point):
+    distance = haversine_meters(source_point[0], source_point[1], target_point[0], target_point[1])
+    return "walk" if distance < 2000 else "car"
+
+
 def route_fingerprint(provider, travel_mode, origin_lat, origin_lng, destination_lat, destination_lng):
     return json.dumps(
         {
@@ -1128,8 +1227,13 @@ def refresh_route_segments(db, slug):
     trip = db.execute("SELECT map_provider FROM trips WHERE slug = ?", (slug,)).fetchone()
     provider = (trip["map_provider"] if trip else "google") or "google"
     edges = db.execute(
-        """SELECT e.id, e.transport_type, source.lat AS source_lat, source.lng AS source_lng,
-        target.lat AS target_lat, target.lng AS target_lng
+        """SELECT e.id, e.transport_type, e.duration, e.source_anchor, e.target_anchor,
+        source.lat AS source_lat, source.lng AS source_lng,
+        source.departure_lat AS source_departure_lat, source.departure_lng AS source_departure_lng,
+        source.arrival_lat AS source_arrival_lat, source.arrival_lng AS source_arrival_lng,
+        target.lat AS target_lat, target.lng AS target_lng,
+        target.departure_lat AS target_departure_lat, target.departure_lng AS target_departure_lng,
+        target.arrival_lat AS target_arrival_lat, target.arrival_lng AS target_arrival_lng
         FROM edges e
         JOIN nodes source ON source.id = e.source
         JOIN nodes target ON target.id = e.target
@@ -1137,6 +1241,8 @@ def refresh_route_segments(db, slug):
         (slug,),
     ).fetchall()
     for edge in edges:
+        source_lat, source_lng = edge_anchor_point(edge, "source", edge["source_anchor"])
+        target_lat, target_lng = edge_anchor_point(edge, "target", edge["target_anchor"])
         segment = upsert_route_segment(
             db,
             slug,
@@ -1144,10 +1250,11 @@ def refresh_route_segments(db, slug):
             edge["id"],
             provider,
             route_mode(edge["transport_type"]),
-            edge["source_lat"],
-            edge["source_lng"],
-            edge["target_lat"],
-            edge["target_lng"],
+            source_lat,
+            source_lng,
+            target_lat,
+            target_lng,
+            edge["duration"] or "",
         )
         if segment:
             db.execute(
@@ -1195,16 +1302,20 @@ def refresh_route_segments(db, slug):
         WHERE trip_slug = ? AND link_type = 'transport_node'
         AND link_id NOT IN (SELECT id FROM nodes WHERE trip_slug = ? AND type = 'transport')""",
         (slug, slug),
-            )
+    )
 
 
 def refresh_edge_route(db, slug, edge_id):
     trip = db.execute("SELECT map_provider FROM trips WHERE slug = ?", (slug,)).fetchone()
     provider = (trip["map_provider"] if trip else "google") or "google"
     edge = db.execute(
-        """SELECT e.id, e.transport_type, e.display_status,
+        """SELECT e.id, e.transport_type, e.duration, e.display_status, e.source_anchor, e.target_anchor,
         source.lat AS source_lat, source.lng AS source_lng,
-        target.lat AS target_lat, target.lng AS target_lng
+        source.departure_lat AS source_departure_lat, source.departure_lng AS source_departure_lng,
+        source.arrival_lat AS source_arrival_lat, source.arrival_lng AS source_arrival_lng,
+        target.lat AS target_lat, target.lng AS target_lng,
+        target.departure_lat AS target_departure_lat, target.departure_lng AS target_departure_lng,
+        target.arrival_lat AS target_arrival_lat, target.arrival_lng AS target_arrival_lng
         FROM edges e
         JOIN nodes source ON source.id = e.source
         JOIN nodes target ON target.id = e.target
@@ -1223,6 +1334,8 @@ def refresh_edge_route(db, slug, edge_id):
             (edge_id, slug),
         )
         return None
+    source_lat, source_lng = edge_anchor_point(edge, "source", edge["source_anchor"])
+    target_lat, target_lng = edge_anchor_point(edge, "target", edge["target_anchor"])
     segment = upsert_route_segment(
         db,
         slug,
@@ -1230,10 +1343,11 @@ def refresh_edge_route(db, slug, edge_id):
         edge["id"],
         provider,
         route_mode(edge["transport_type"]),
-        edge["source_lat"],
-        edge["source_lng"],
-        edge["target_lat"],
-        edge["target_lng"],
+        source_lat,
+        source_lng,
+        target_lat,
+        target_lng,
+        edge["duration"] or "",
     )
     if segment:
         db.execute(
@@ -1738,12 +1852,16 @@ def update_edge(slug, edge_id):
 def auto_connect(slug):
     with connection() as db:
         nodes = list(db.execute(
-            """SELECT id, day, lat, lng FROM nodes
-            WHERE trip_slug = ? AND type NOT IN ('transport', 'transfer')
+            """SELECT id, title, type, day, date, time, end_day, end_date, end_time,
+            lat, lng, transport_mode, departure_lat, departure_lng, arrival_lat, arrival_lng,
+            arrival_time, arrival_date
+            FROM nodes
+            WHERE trip_slug = ?
             AND status != 'unscheduled' AND day > 0 AND time != ''
-            ORDER BY day, time""",
+            ORDER BY day, time, title""",
             (slug,),
         ))
+        nodes.sort(key=lambda node: (event_entry_absolute(node), event_exit_absolute(node), node["title"]))
         existing_edges = {
             row["id"]: dict(row)
             for row in db.execute(
@@ -1755,12 +1873,19 @@ def auto_connect(slug):
         generated = []
         for index, current in enumerate(nodes[:-1]):
             following = nodes[index + 1]
-            if current["day"] != following["day"]:
+            source_anchor = event_exit_anchor(current)
+            target_anchor = event_entry_anchor(following)
+            if event_exit_day(current) != event_entry_day(following):
+                continue
+            source_point = node_anchor_point(current, source_anchor)
+            target_point = node_anchor_point(following, target_anchor)
+            distance_meters = haversine_meters(source_point[0], source_point[1], target_point[0], target_point[1])
+            if distance_meters < 80:
                 continue
             edge_id = f"auto-{current['id']}-{following['id']}"
             existing = existing_edges.get(edge_id)
-            km = math.sqrt((current["lat"] - following["lat"]) ** 2 + (current["lng"] - following["lng"]) ** 2) * 85
-            transport_type = "walk" if km < 2 else "car"
+            transport_type = default_connection_transport_type(source_point, target_point)
+            km = distance_meters / 1000
             duration = f"{max(5, round(km * (15 if transport_type == 'walk' else 1.3)))} min"
             if existing and existing["is_locked"]:
                 transport_type = existing["transport_type"]
@@ -1770,6 +1895,9 @@ def auto_connect(slug):
                     "trip_slug": slug,
                     "source": current["id"],
                     "target": following["id"],
+                    "source_anchor": source_anchor,
+                    "target_anchor": target_anchor,
+                    "link_kind": "connection",
                     "transport_type": transport_type,
                     "route_preference": existing["route_preference"] if existing and existing["is_locked"] else "recommended",
                     "is_manual": existing["is_manual"] if existing and existing["is_locked"] else 0,
@@ -1790,11 +1918,16 @@ def auto_connect(slug):
             db.execute("DELETE FROM edges WHERE trip_slug = ?", (slug,))
         db.executemany(
             """INSERT INTO edges
-            (id, trip_slug, source, target, transport_type, route_preference, is_manual, is_locked, display_status, duration, distance)
-            VALUES (:id, :trip_slug, :source, :target, :transport_type, :route_preference, :is_manual, :is_locked, :display_status, :duration, :distance)
+            (id, trip_slug, source, target, source_anchor, target_anchor, link_kind, transport_type,
+            route_preference, is_manual, is_locked, display_status, duration, distance)
+            VALUES (:id, :trip_slug, :source, :target, :source_anchor, :target_anchor, :link_kind,
+            :transport_type, :route_preference, :is_manual, :is_locked, :display_status, :duration, :distance)
             ON CONFLICT(id) DO UPDATE SET
             source=excluded.source,
             target=excluded.target,
+            source_anchor=excluded.source_anchor,
+            target_anchor=excluded.target_anchor,
+            link_kind=excluded.link_kind,
             transport_type=excluded.transport_type,
             route_preference=excluded.route_preference,
             is_manual=excluded.is_manual,

@@ -8,6 +8,8 @@ export type TransportMode = 'flight' | 'high_speed_rail' | 'train' | 'car' | 'bu
 export type EdgeTransportType = 'walk' | 'car' | 'taxi' | 'transit' | 'bus' | 'subway' | 'train' | 'high_speed_rail' | 'ferry' | 'other';
 export type EdgeRoutePreference = 'recommended' | 'fastest' | 'shortest' | 'avoid_tolls' | 'avoid_highways';
 export type EdgeDisplayStatus = 'visible' | 'hidden';
+export type EdgeAnchor = 'place' | 'departure' | 'arrival';
+export type EdgeLinkKind = 'connection' | 'transport_leg';
 export type TripRegion = 'domestic' | 'overseas';
 export type MapProvider = 'amap' | 'google';
 export type CoordinateSystem = 'gcj02' | 'wgs84';
@@ -58,6 +60,9 @@ export interface ItineraryEdge {
   id: string;
   source: string; // Node ID
   target: string; // Node ID
+  sourceAnchor?: EdgeAnchor;
+  targetAnchor?: EdgeAnchor;
+  linkKind?: EdgeLinkKind;
   transportType?: EdgeTransportType;
   routePreference?: EdgeRoutePreference;
   isManual?: boolean;
