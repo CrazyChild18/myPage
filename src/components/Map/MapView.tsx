@@ -1670,7 +1670,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
 
   const selectedHomeTrip = trips.find((trip) => trip.slug === selectedHomeSlug) || null;
   const activeProvider = mode === 'home'
-    ? mapProviderForTrip(selectedHomeTrip)
+    ? 'google'
     : mapProviderForTrip(trip);
   const sdkMapProps: ProviderMapCanvasProps = {
     provider: activeProvider,

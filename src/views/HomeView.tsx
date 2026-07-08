@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { TripRegion, TripSummary } from '../types';
-import { mapProviderForRegion, tripRegionLabel } from '../map/provider';
+import { tripRegionLabel } from '../map/provider';
 
 interface HomeViewProps {
   onOpenTrip: (slug: string) => void;
@@ -186,7 +186,6 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
                 <div className="grid grid-cols-2 gap-1">
                   {(['overseas', 'domestic'] as TripRegion[]).map((region) => {
                     const active = draft.trip_region === region;
-                    const provider = mapProviderForRegion(region);
                     return (
                       <button
                         key={region}
@@ -195,7 +194,7 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
                         className={`rounded-xl px-3 py-2 text-left transition ${active ? 'bg-white text-slate-950 shadow-lg' : 'text-slate-400 hover:bg-white/10 hover:text-white'}`}
                       >
                         <span className="block text-xs font-black">{tripRegionLabel[region]}</span>
-                        <span className="mt-0.5 block text-[10px] font-semibold opacity-70">{provider === 'google' ? 'Google Maps' : '高德地图'}</span>
+                        <span className="mt-0.5 block text-[10px] font-semibold opacity-70">{region === 'domestic' ? '国内坐标规则' : '海外坐标规则'}</span>
                       </button>
                     );
                   })}
