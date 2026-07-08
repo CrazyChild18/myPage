@@ -2423,6 +2423,11 @@ export default function AdminView() {
                 </div>
               ))}
 
+              <div className="pointer-events-none absolute left-[58px] top-0 z-10 h-full w-[104px] border-r border-slate-200/90 bg-gradient-to-r from-slate-50/85 via-white/60 to-slate-50/45">
+                <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-emerald-100/70" />
+                <span className="absolute inset-y-0 right-0 w-px bg-slate-200" />
+              </div>
+
               <div className="pointer-events-none absolute left-[58px] top-0 z-20 w-[104px] px-1">
                 {currentLodgingBands.map((band) => {
                   const top = ((band.start - START_MINUTES) / SLOT_MINUTES) * SLOT_HEIGHT + 2;
@@ -2433,21 +2438,21 @@ export default function AdminView() {
                       key={band.id}
                       type="button"
                       onClick={() => editStay(band.stay)}
-                      className={`pointer-events-auto absolute inset-x-1 overflow-hidden rounded-xl border bg-gradient-to-b from-emerald-500 to-teal-500 px-2 py-1.5 text-left text-white shadow-[0_12px_24px_rgba(16,185,129,0.22)] transition hover:-translate-y-0.5 hover:shadow-lg ${editingStayId === band.stay.id ? 'ring-2 ring-emerald-300/50' : ''}`}
+                      className={`pointer-events-auto absolute inset-x-2 overflow-hidden rounded-lg border px-2 py-1.5 text-left shadow-sm backdrop-blur transition hover:-translate-y-0.5 hover:border-emerald-300 hover:bg-emerald-100/90 hover:shadow-md ${editingStayId === band.stay.id ? 'border-emerald-400 bg-emerald-100 text-emerald-950 ring-2 ring-emerald-300/35' : 'border-emerald-200/70 bg-emerald-50/85 text-emerald-800'}`}
                       style={{ top, height }}
                     >
-                      <span className="absolute inset-y-2 left-1 w-1 rounded-full bg-white/55" />
-                      <span className="relative z-10 flex min-w-0 items-center gap-1 pl-1 text-[8px] font-black">
-                        <BedDouble className="h-3 w-3 shrink-0" />
+                      <span className="absolute inset-y-2 left-1 w-1 rounded-full bg-emerald-400/45" />
+                      <span className="relative z-10 flex min-w-0 items-center gap-1 pl-1 text-[8px] font-black text-emerald-700">
+                        <BedDouble className="h-3 w-3 shrink-0 text-emerald-500" />
                         <span className="truncate">{compact ? '夜宿' : `${band.displayStart}-${band.displayEnd}`}</span>
                       </span>
                       {!compact && (
-                        <span className="relative z-10 mt-1 block min-w-0 truncate pl-1 text-[9px] font-black leading-tight">
+                        <span className="relative z-10 mt-1 block min-w-0 truncate pl-1 text-[9px] font-black leading-tight text-emerald-900">
                           {band.lodging.name}
                         </span>
                       )}
                       {height >= 82 && (
-                        <span className="relative z-10 mt-1 block truncate pl-1 text-[8px] font-bold text-white/78">
+                        <span className="relative z-10 mt-1 block truncate pl-1 text-[8px] font-bold text-emerald-600/75">
                           第 {band.nightIndex} / {band.nightCount} 晚
                         </span>
                       )}

@@ -673,6 +673,65 @@ const ProviderMissingFallback = ({
 
 const googleLatLng = (point: [number, number]) => ({ lat: point[0], lng: point[1] });
 
+const clearGoogleHomeCameraTimers = (timersRef: React.MutableRefObject<number[]>) => {
+  timersRef.current.forEach((timer) => window.clearTimeout(timer));
+  timersRef.current = [];
+};
+
+const queueGoogleHomeCameraStep = (timersRef: React.MutableRefObject<number[]>, delay: number, step: () => void) => {
+  const timer = window.setTimeout(() => {
+    timersRef.current = timersRef.current.filter((item) => item !== timer);
+    step();
+  }, delay);
+  timersRef.current.push(timer);
+};
+
+const animateGoogleZoom = (
+  map: any,
+  fromZoom: number,
+  toZoom: number,
+  delay: number,
+  timersRef: React.MutableRefObject<number[]>,
+) => {
+  const start = Math.round(fromZoom);
+  const end = Math.round(toZoom);
+  const direction = Math.sign(end - start);
+  if (!direction) return;
+  const steps = Math.abs(end - start);
+  for (let index = 1; index <= steps; index += 1) {
+    queueGoogleHomeCameraStep(timersRef, delay + index * 115, () => map.setZoom(start + direction * index));
+  }
+};
+
+const runGoogleHomeCameraTransition = (
+  map: any,
+  trip: TripSummary,
+  previousSlug: string | null,
+  timersRef: React.MutableRefObject<number[]>,
+) => {
+  clearGoogleHomeCameraTimers(timersRef);
+  const target = { lat: trip.center_lat, lng: trip.center_lng };
+  const targetZoom = homeTripZoom(trip);
+  const currentZoom = Number(map.getZoom?.() ?? targetZoom);
+  const currentCenter = map.getCenter?.();
+  const currentLat = Number(currentCenter?.lat?.() ?? target.lat);
+  const currentLng = Number(currentCenter?.lng?.() ?? target.lng);
+  const distanceKm = routeDistanceKm(currentLat, currentLng, target.lat, target.lng);
+  const shouldTravelAcrossWorld = Boolean(previousSlug && previousSlug !== trip.slug && distanceKm > 900);
+
+  if (!shouldTravelAcrossWorld) {
+    map.panTo(target);
+    animateGoogleZoom(map, currentZoom, targetZoom, 120, timersRef);
+    return;
+  }
+
+  const overviewZoom = distanceKm > 5200 ? 3 : 4;
+  const zoomOutDuration = Math.abs(Math.round(currentZoom) - overviewZoom) * 115;
+  const panDelay = zoomOutDuration + 140;
+  animateGoogleZoom(map, currentZoom, overviewZoom, 0, timersRef);
+  queueGoogleHomeCameraStep(timersRef, panDelay, () => map.panTo(target));
+  queueGoogleHomeCameraStep(timersRef, panDelay + 560, () => animateGoogleZoom(map, overviewZoom, targetZoom, 0, timersRef));
+};
 const nodeInfoHtml = (node: ItineraryNode) => {
   const image = imagesOf(node)[0];
   return `
@@ -755,6 +814,8 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   const infoRef = useRef<any>(null);
   const hoverInfoRef = useRef<any>(null);
   const hoverOverlaysRef = useRef<any[]>([]);
+  const homeCameraTimersRef = useRef<number[]>([]);
+  const lastHomeSlugRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -851,8 +912,11 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             overlaysRef.current.push(marker);
           });
           if (selectedHomeTrip) {
-            mapRef.current.setZoom(homeTripZoom(selectedHomeTrip));
-            mapRef.current.panTo({ lat: selectedHomeTrip.center_lat, lng: selectedHomeTrip.center_lng });
+            runGoogleHomeCameraTransition(mapRef.current, selectedHomeTrip, lastHomeSlugRef.current, homeCameraTimersRef);
+            lastHomeSlugRef.current = selectedHomeTrip.slug;
+          } else {
+            clearGoogleHomeCameraTimers(homeCameraTimersRef);
+            lastHomeSlugRef.current = null;
           }
         } else {
           visibleTransportRoutes.forEach((route) => {
@@ -1140,6 +1204,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
 
     return () => {
       cancelled = true;
+      clearGoogleHomeCameraTimers(homeCameraTimersRef);
     };
   }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
