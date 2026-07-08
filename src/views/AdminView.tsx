@@ -796,6 +796,7 @@ export default function AdminView() {
     deleteStay,
     autoConnectEdges,
     saving,
+    syncingNodeIds,
     activeDay,
     activeNodeId,
     activeEdgeId,
@@ -837,8 +838,12 @@ export default function AdminView() {
 
   const currentDay = activeDay === 'all' ? dayNumbers[0] || 1 : activeDay;
   const currentDate = dateByDay.get(currentDay) || trip?.start_date || '2026-09-26';
+  const syncingNodeIdSet = useMemo(() => new Set(syncingNodeIds), [syncingNodeIds]);
 
   const [editingId, setEditingId] = useState<string | null>(null);
+  const nonNodeSaving = saving && syncingNodeIds.length === 0;
+  const editingNodeSyncing = Boolean(editingId && syncingNodeIdSet.has(editingId));
+  const formSubmitSaving = nonNodeSaving || editingNodeSyncing;
   const [form, setForm] = useState(emptyForm({ day: currentDay, date: currentDate }));
   const [editorMode, setEditorMode] = useState<'item' | 'lodging'>('item');
   const [editingLodgingId, setEditingLodgingId] = useState<string | null>(null);
@@ -1724,14 +1729,15 @@ export default function AdminView() {
       status: node.status === 'unscheduled' ? 'planned' : node.status,
     };
 
+    setActiveDay(visibleDay);
+    setActiveNodeId(nodeId);
+    if (editingId === nodeId) setForm((current) => ({ ...current, ...patch }));
+    toast(`已移动：${node.title} · D${startDay} ${startTime}，正在同步`);
+
     try {
       await updateNode(nodeId, patch);
-      setActiveDay(visibleDay);
-      setActiveNodeId(nodeId);
-      if (editingId === nodeId) setForm((current) => ({ ...current, ...patch }));
-      toast(`已安排：${node.title} · D${startDay} ${startTime}`);
     } catch {
-      toast('拖拽排期失败，请重试');
+      toast('拖拽排期失败，已恢复原位置');
     }
   };
 
@@ -2327,10 +2333,11 @@ export default function AdminView() {
               const tone = itineraryTypeTone(node);
               const coverUrl = nodeImageUrl(node);
               const Icon = pointTypeOptions.find((option) => option.value === activitySubtypeOf(node))?.icon || MapPin;
+              const nodeSyncing = syncingNodeIdSet.has(node.id);
               return (
                 <article
                   key={node.id}
-                  draggable={!saving}
+                  draggable={!nodeSyncing}
                   onDragStart={(event) => beginDrag(event, node)}
                   onDragEnd={() => {
                     setDraggedNodeId(null);
@@ -2341,7 +2348,7 @@ export default function AdminView() {
                     clearDragPreview();
                   }}
                   onClick={() => edit(node)}
-                  className={`cursor-grab rounded-xl border p-2.5 shadow-sm transition active:cursor-grabbing ${tone.card} hover:border-white hover:bg-white ${activeNodeId === node.id ? 'ring-2 ring-indigo-400/40' : ''} ${draggedNodeId === node.id ? 'opacity-45' : ''}`}
+                  className={`${nodeSyncing ? 'cursor-wait opacity-80' : 'cursor-grab active:cursor-grabbing'} rounded-xl border p-2.5 shadow-sm transition ${tone.card} hover:border-white hover:bg-white ${activeNodeId === node.id ? 'ring-2 ring-indigo-400/40' : ''} ${draggedNodeId === node.id ? 'opacity-45' : ''}`}
                 >
                   <div className="flex items-stretch gap-3">
                     <div className="relative h-[74px] w-[92px] shrink-0 overflow-hidden rounded-xl border border-white/70 bg-white/65">
@@ -2358,6 +2365,11 @@ export default function AdminView() {
                       <span className="absolute bottom-1.5 left-1.5 rounded-full bg-slate-900/75 px-1.5 py-0.5 text-[8px] font-black text-white shadow-sm">
                         待排期
                       </span>
+                      {nodeSyncing && (
+                        <span className="absolute bottom-1.5 right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-white/90 text-indigo-600 shadow-sm" title="Syncing">
+                          <LoaderCircle className="h-3 w-3 animate-spin" />
+                        </span>
+                      )}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
@@ -2526,7 +2538,8 @@ export default function AdminView() {
                     : pointTypeOptions.find((option) => option.value === activitySubtypeOf(event.node))?.icon || MapPin;
                   const showScheduleDetails = height >= 58;
                   const showScheduleThumb = height >= 74;
-                  const canDragEvent = !saving && event.node.type !== 'transport';
+                  const nodeSyncing = syncingNodeIdSet.has(event.node.id);
+                  const canDragEvent = !nodeSyncing && event.node.type !== 'transport';
                   const segmentOffsetMinutes = Math.max(
                     0,
                     (currentDay - 1) * END_MINUTES + event.start - nodeScheduleRange(event.node, dateByDay, trip?.start_date).startAbsolute,
@@ -2666,7 +2679,7 @@ export default function AdminView() {
                         clearDragPreview();
                       }}
                       onClick={() => edit(event.node, currentDay)}
-                      className={`pointer-events-auto absolute isolate overflow-hidden rounded-xl border px-3 py-2 text-left text-white backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:brightness-105 ${canDragEvent ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} ${activeNodeId === event.node.id ? 'ring-2 ring-slate-950/20' : ''} ${draggedNodeId === event.node.id ? 'opacity-35' : ''}`}
+                      className={`pointer-events-auto absolute isolate overflow-hidden rounded-xl border px-3 py-2 text-left text-white backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:brightness-105 ${canDragEvent ? 'cursor-grab active:cursor-grabbing' : nodeSyncing ? 'cursor-wait' : 'cursor-pointer'} ${activeNodeId === event.node.id ? 'ring-2 ring-slate-950/20' : ''} ${draggedNodeId === event.node.id ? 'opacity-35' : ''} ${nodeSyncing ? 'brightness-95' : ''}`}
                       style={{
                         top,
                         height,
@@ -2678,6 +2691,11 @@ export default function AdminView() {
                       <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-white/55" />
                       <span className="pointer-events-none absolute bottom-2 left-2 top-2 w-1 rounded-full bg-[var(--event-rail)]/90 shadow-[0_0_16px_rgba(255,255,255,0.45)]" />
                       <span className="pointer-events-none absolute -right-8 -top-10 h-24 w-24 rounded-full bg-white/18 blur-2xl" />
+                      {nodeSyncing && (
+                        <span className="absolute bottom-2 right-2 z-20 flex h-6 w-6 items-center justify-center rounded-full border border-white/20 bg-white/18 text-white shadow-sm backdrop-blur" title="Syncing">
+                          <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                        </span>
+                      )}
                       <span
                         title="取消排期"
                         onClick={(clickEvent) => {
@@ -3453,8 +3471,8 @@ export default function AdminView() {
           </>
           )}
 
-          <button disabled={saving || editingExistingTransport} className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 py-3 text-xs font-semibold text-white disabled:opacity-50">
-            {saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          <button disabled={formSubmitSaving || editingExistingTransport} className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 py-3 text-xs font-semibold text-white disabled:opacity-50">
+            {formSubmitSaving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {editingEdge ? '保存路段设置' : editorMode === 'lodging' ? (editingStayId ? '保存住宿区间' : '安排住宿') : editingExistingTransport ? '删除后重新录入' : editingId ? '保存修改' : '新增内容'}
           </button>
         </form>

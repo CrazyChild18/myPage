@@ -16,6 +16,7 @@ interface ItineraryState {
   activeDay: number | 'all';
   loading: boolean;
   saving: boolean;
+  syncingNodeIds: string[];
   error: string | null;
 
   loadTrip: (slug: string) => Promise<void>;
@@ -71,6 +72,7 @@ const applyTrip = (data: TripResponse) => ({
   activeDay: 'all' as const,
   loading: false,
   saving: false,
+  syncingNodeIds: [],
   error: null,
 });
 
@@ -88,6 +90,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
   activeDay: 'all',
   loading: false,
   saving: false,
+  syncingNodeIds: [],
   error: null,
 
   loadTrip: async (slug) => {
@@ -112,6 +115,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
     activeDay: 'all',
     loading: false,
     saving: false,
+    syncingNodeIds: [],
     error: null,
   }),
 
@@ -159,6 +163,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
         .sort(compareItineraryNodes),
       activeEdgeId: null,
       saving: true,
+      syncingNodeIds: state.syncingNodeIds.includes(id) ? state.syncingNodeIds : [...state.syncingNodeIds, id],
       error: null,
     }));
     try {
@@ -166,18 +171,26 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
         method: 'PUT',
         body: JSON.stringify(updatedFields),
       });
-      set((state) => ({
-        nodes: state.nodes.map((node) => node.id === id ? updated : node)
-          .sort(compareItineraryNodes),
-        activeEdgeId: null,
-        saving: false,
-      }));
+      set((state) => {
+        const syncingNodeIds = state.syncingNodeIds.filter((nodeId) => nodeId !== id);
+        return {
+          nodes: state.nodes.map((node) => node.id === id ? updated : node)
+            .sort(compareItineraryNodes),
+          activeEdgeId: null,
+          syncingNodeIds,
+          saving: syncingNodeIds.length > 0,
+        };
+      });
     } catch (error) {
-      set((state) => ({
-        nodes: state.nodes.map((node) => node.id === id ? current : node),
-        saving: false,
-        error: error instanceof Error ? error.message : '更新节点失败',
-      }));
+      set((state) => {
+        const syncingNodeIds = state.syncingNodeIds.filter((nodeId) => nodeId !== id);
+        return {
+          nodes: state.nodes.map((node) => node.id === id ? current : node),
+          syncingNodeIds,
+          saving: syncingNodeIds.length > 0,
+          error: error instanceof Error ? error.message : '更新节点失败',
+        };
+      });
       throw error;
     }
   },
