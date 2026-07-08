@@ -631,6 +631,11 @@ def cached_geocode(key, ttl, loader):
     return value
 
 
+def should_bypass_cache():
+    value = request.args.get("cache", "").strip().lower()
+    return value in {"0", "false", "no", "off"}
+
+
 def json_request(url, params, headers=None):
     req = Request(
         f"{url}?{urlencode(params)}",
@@ -1480,14 +1485,18 @@ def hybrid_geocode_search():
     if len(query) < 2:
         return jsonify([])
     try:
+        bypass_cache = should_bypass_cache()
         if provider == "amap":
-            results = cached_geocode(
-                ("search", "amap", query.casefold()),
-                GEOCODE_CACHE_TTL,
-                lambda: amap_request(
+            def load_amap_results():
+                return amap_request(
                     "place/text",
                     {"keywords": query, "offset": 6, "page": 1, "extensions": "base"},
-                ).get("pois", []),
+                ).get("pois", [])
+
+            results = load_amap_results() if bypass_cache else cached_geocode(
+                ("search", "amap", query.casefold()),
+                GEOCODE_CACHE_TTL,
+                load_amap_results,
             )
             payload = []
             for item in results:
@@ -1513,23 +1522,27 @@ def hybrid_geocode_search():
             return jsonify(payload)
 
         if provider == "google":
-            return jsonify(cached_geocode(
-                (
-                    "search",
-                    "google",
-                    query.casefold(),
-                    region_code.upper(),
-                    round(bias_lat_value, 1) if bias_lat_value is not None else None,
-                    round(bias_lng_value, 1) if bias_lng_value is not None else None,
-                ),
+            cache_key = (
+                "search",
+                "google",
+                query.casefold(),
+                region_code.upper(),
+                round(bias_lat_value, 1) if bias_lat_value is not None else None,
+                round(bias_lng_value, 1) if bias_lng_value is not None else None,
+            )
+            loader = lambda: google_text_search(query, bias_lat_value, bias_lng_value, region_code)
+            return jsonify(loader() if bypass_cache else cached_geocode(
+                cache_key,
                 GEOCODE_CACHE_TTL,
-                lambda: google_text_search(query, bias_lat_value, bias_lng_value, region_code),
+                loader,
             ))
 
-        return jsonify(cached_geocode(
-            ("search", "osm", OVERSEAS_GEOCODE_PROVIDER, query.casefold()),
+        cache_key = ("search", "osm", OVERSEAS_GEOCODE_PROVIDER, query.casefold())
+        loader = lambda: overseas_search(query)
+        return jsonify(loader() if bypass_cache else cached_geocode(
+            cache_key,
             GEOCODE_CACHE_TTL,
-            lambda: overseas_search(query),
+            loader,
         ))
     except RuntimeError as error:
         return jsonify({"error": str(error)}), 502

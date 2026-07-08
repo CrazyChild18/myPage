@@ -39,8 +39,6 @@ interface LocationPickerProps {
   regionCode?: string;
 }
 
-const searchCache = new Map<string, SearchResult[]>();
-
 type ProviderMiniMapProps = {
   value: LocationValue;
   provider: MapProvider;
@@ -142,15 +140,24 @@ export default function LocationPicker({ value, onChange, compact = false, provi
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [resolving, setResolving] = useState(false);
-  const [cacheHit, setCacheHit] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const searchSeqRef = useRef(0);
 
   const switchProvider = (nextProvider: MapProvider) => {
     if (forcedProvider && !allowProviderSwitch) return;
+    searchSeqRef.current += 1;
     setLocalProvider(nextProvider);
     setResults([]);
+    setSearching(false);
     setError(null);
-    setCacheHit(false);
+  };
+
+  const updateQuery = (nextQuery: string) => {
+    searchSeqRef.current += 1;
+    setQuery(nextQuery);
+    setResults([]);
+    setSearching(false);
+    setError(null);
   };
 
   const search = async () => {
@@ -160,33 +167,35 @@ export default function LocationPicker({ value, onChange, compact = false, provi
       return;
     }
 
-    const cacheKey = `${provider}:${regionCode}:${Math.round(value.lat * 10) / 10}:${Math.round(value.lng * 10) / 10}:${normalizedQuery.toLocaleLowerCase()}`;
-    const cached = searchCache.get(cacheKey);
-    if (cached) {
-      setResults(cached);
-      setCacheHit(true);
-      setError(cached.length ? null : '没有找到匹配地点，可以直接点击地图选位置');
-      return;
-    }
-
+    const searchSeq = searchSeqRef.current + 1;
+    searchSeqRef.current = searchSeq;
     setSearching(true);
-    setCacheHit(false);
     setError(null);
     try {
-      const response = await fetch(`/api/geocode/search?q=${encodeURIComponent(normalizedQuery)}&provider=${provider}&region=${encodeURIComponent(regionCode)}&lat=${value.lat}&lng=${value.lng}`);
+      const params = new URLSearchParams({
+        q: normalizedQuery,
+        provider,
+        region: regionCode,
+        lat: String(value.lat),
+        lng: String(value.lng),
+        cache: '0',
+      });
+      const response = await fetch(`/api/geocode/search?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '地点搜索失败');
-      searchCache.set(cacheKey, data);
+      if (searchSeqRef.current !== searchSeq) return;
       setResults(data);
       if (!data.length) setError('没有找到匹配地点，可以直接点击地图选位置');
     } catch (reason) {
+      if (searchSeqRef.current !== searchSeq) return;
       setError(reason instanceof Error ? reason.message : '地点搜索失败');
     } finally {
-      setSearching(false);
+      if (searchSeqRef.current === searchSeq) setSearching(false);
     }
   };
 
   const choose = (result: SearchResult) => {
+    searchSeqRef.current += 1;
     onChange({
       lat: result.lat,
       lng: result.lng,
@@ -199,6 +208,7 @@ export default function LocationPicker({ value, onChange, compact = false, provi
     });
     setQuery(result.name);
     setResults([]);
+    setSearching(false);
   };
 
   const pickOnMap = async (lat: number, lng: number) => {
@@ -265,7 +275,7 @@ export default function LocationPicker({ value, onChange, compact = false, provi
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => updateQuery(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter') {
                 event.preventDefault();
@@ -289,7 +299,6 @@ export default function LocationPicker({ value, onChange, compact = false, provi
 
       <div className="flex items-center justify-between px-0.5 text-[9px] text-slate-400">
         <span>当前使用 {providerLabel}，仅点击搜索时调用接口</span>
-        {cacheHit && <span className="font-bold text-emerald-600">已使用缓存</span>}
       </div>
 
       {results.length > 0 && (
