@@ -66,7 +66,7 @@ const applyTrip = (data: TripResponse) => ({
   routeSegments: data.routeSegments || [],
   lodgings: data.lodgings || [],
   stays: data.stays || [],
-  activeNodeId: data.nodes.find(isScheduledNode)?.id || data.nodes[0]?.id || null,
+  activeNodeId: null,
   activeEdgeId: null,
   activeDay: 'all' as const,
   loading: false,
@@ -233,7 +233,7 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
             const edge = state.edges.find((item) => item.id === segment.linkId);
             return edge && edge.source !== id && edge.target !== id;
           }),
-          activeNodeId: state.activeNodeId === id ? nodes[0]?.id || null : state.activeNodeId,
+          activeNodeId: state.activeNodeId === id ? null : state.activeNodeId,
           activeEdgeId: state.activeEdgeId && state.edges.some((edge) => edge.id === state.activeEdgeId && (edge.source === id || edge.target === id))
             ? null
             : state.activeEdgeId,
@@ -314,8 +314,9 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
   setActiveEdgeId: (id) => set({ activeEdgeId: id, activeNodeId: null }),
   setHoveredEdgeId: (id) => set({ hoveredEdgeId: id }),
   setActiveDay: (day) => set((state) => {
-    const firstNode = state.nodes.find((node) => isScheduledNode(node) && (day === 'all' || node.day === day));
-    return { activeDay: day, activeNodeId: firstNode?.id || state.activeNodeId, activeEdgeId: null };
+    const activeNode = state.nodes.find((node) => node.id === state.activeNodeId);
+    const activeNodeVisible = activeNode && isScheduledNode(activeNode) && (day === 'all' || activeNode.day === day);
+    return { activeDay: day, activeNodeId: activeNodeVisible ? state.activeNodeId : null, activeEdgeId: null };
   }),
 
   autoConnectEdges: async () => {
