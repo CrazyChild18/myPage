@@ -522,49 +522,6 @@ const ROUTE_STACK_MIN_SHARED_CELLS = 3;
 const ROUTE_STACK_MAX_GROUPS = 14;
 const ROUTE_STACK_MAX_MEMBERS = 5;
 
-const routeStackHandleOffsetPx = (index: number, count: number) => (index - (count - 1) / 2) * 24;
-
-const routeStackHandleHtml = (member: RouteStackMember, emphasized = false) => `
-  <div style="
-    transform:translate(${routeStackHandleOffsetPx(member.stackIndex, member.stackSize)}px,-18px);
-    width:28px;height:14px;border-radius:999px;
-    display:flex;align-items:center;justify-content:center;
-    background:rgba(255,255,255,.94);
-    border:1px solid rgba(148,163,184,.55);
-    box-shadow:0 8px 18px rgba(15,23,42,.22),0 0 0 ${emphasized ? 3 : 1}px rgba(255,255,255,.7);
-    cursor:pointer;
-  ">
-    <span style="width:18px;height:4px;border-radius:999px;background:${member.color};display:block"></span>
-  </div>
-`;
-
-const routeStackHandleIcon = (member: RouteStackMember, emphasized = false) => L.divIcon({
-  className: 'route-stack-handle-marker',
-  html: routeStackHandleHtml(member, emphasized),
-  iconSize: [30, 16],
-  iconAnchor: [15, 8],
-});
-
-const routeStackHandleSvgUrl = (member: RouteStackMember) => {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="18" viewBox="0 0 32 18">
-      <rect x="1" y="1" width="30" height="16" rx="8" fill="white" fill-opacity=".96" stroke="#cbd5e1"/>
-      <path d="M8 9h16" stroke="${member.color}" stroke-width="4" stroke-linecap="round"/>
-    </svg>
-  `;
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
-};
-
-const routeStackLabelHtml = (member: RouteStackMember) => `
-  <div style="font-family:Inter,system-ui,sans-serif">
-    <div style="margin-bottom:6px;display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:#f8fafc;color:#475569;padding:3px 8px;font-size:10px;font-weight:900">
-      <span style="width:18px;height:4px;border-radius:999px;background:${member.color};display:inline-block"></span>
-      同路段路线
-    </div>
-    ${routeLabelHtml(member.label)}
-  </div>
-`;
-
 const routeCellKey = (lat: number, lng: number) =>
   `${Math.round(lat / ROUTE_STACK_GRID_DEGREES)}:${Math.round(lng / ROUTE_STACK_GRID_DEGREES)}`;
 
@@ -728,6 +685,76 @@ const buildRouteStackGroups = (candidates: RouteStackCandidate[]): RouteStackGro
   return groups
     .sort((left, right) => right.members.length - left.members.length)
     .slice(0, ROUTE_STACK_MAX_GROUPS);
+};
+
+type RouteOverlapLegendProps = {
+  groups: RouteStackGroup[];
+  activeEdgeId: string | null;
+  hoveredEdgeId: string | null;
+  setActiveEdgeId: (id: string | null) => void;
+  setHoveredEdgeId: (id: string | null) => void;
+};
+
+const RouteOverlapLegend: React.FC<RouteOverlapLegendProps> = ({
+  groups,
+  activeEdgeId,
+  hoveredEdgeId,
+  setActiveEdgeId,
+  setHoveredEdgeId,
+}) => {
+  if (!groups.length) return null;
+
+  return (
+    <div className="pointer-events-auto absolute bottom-4 left-4 z-[10000] w-[min(21rem,calc(100%-2rem))] overflow-hidden rounded-2xl border border-white/70 bg-white/86 shadow-[0_18px_46px_rgba(15,23,42,0.24)] backdrop-blur-xl">
+      <div className="flex items-center justify-between border-b border-slate-200/70 px-3.5 py-2.5">
+        <div>
+          <div className="text-[11px] font-black text-slate-950">重叠路线</div>
+          <div className="mt-0.5 text-[9px] font-bold text-slate-500">悬浮高亮，点击锁定</div>
+        </div>
+        <div className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[9px] font-black text-slate-500">
+          {groups.reduce((sum, group) => sum + group.members.length, 0)} 条
+        </div>
+      </div>
+      <div className="max-h-56 space-y-2 overflow-y-auto p-2.5">
+        {groups.map((group) => (
+          <div key={group.id} className="rounded-xl border border-slate-200/80 bg-slate-50/78 p-1.5">
+            <div className="px-1.5 pb-1 text-[9px] font-black text-slate-400">同路段</div>
+            {group.members.map((member) => {
+              const active = activeEdgeId === member.stateId || hoveredEdgeId === member.stateId;
+              return (
+                <button
+                  key={member.stateId}
+                  type="button"
+                  onMouseEnter={() => setHoveredEdgeId(member.stateId)}
+                  onMouseLeave={() => setHoveredEdgeId(null)}
+                  onFocus={() => setHoveredEdgeId(member.stateId)}
+                  onBlur={() => setHoveredEdgeId(null)}
+                  onClick={() => setActiveEdgeId(member.stateId)}
+                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition ${
+                    active ? 'bg-white shadow-sm ring-1 ring-indigo-200' : 'hover:bg-white/86'
+                  }`}
+                >
+                  <span
+                    className="h-1.5 w-7 shrink-0 rounded-full shadow-[0_0_0_2px_rgba(255,255,255,.9)]"
+                    style={{ background: member.color }}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[11px] font-black text-slate-900">{member.label.title}</span>
+                    <span className="mt-0.5 block truncate text-[9px] font-bold text-slate-500">{member.label.subtitle}</span>
+                  </span>
+                  {member.label.metric && (
+                    <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[9px] font-black text-rose-600 shadow-sm">
+                      {member.label.metric}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 };
 
 const transportIconType = (route: ItineraryNode) => {
@@ -933,8 +960,10 @@ type ProviderMapCanvasProps = {
   nodes: ItineraryNode[];
   activeNodeId: string | null;
   activeEdgeId: string | null;
+  hoveredEdgeId: string | null;
   setActiveNodeId: (id: string | null) => void;
   setActiveEdgeId: (id: string | null) => void;
+  setHoveredEdgeId: (id: string | null) => void;
   onSelectHomeTrip?: (slug: string) => void;
   onOpenHomeTrip?: (slug: string) => void;
 };
@@ -1087,8 +1116,10 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   nodes,
   activeNodeId,
   activeEdgeId,
+  hoveredEdgeId,
   setActiveNodeId,
   setActiveEdgeId,
+  setHoveredEdgeId,
   onSelectHomeTrip,
   onOpenHomeTrip,
 }) => {
@@ -1203,23 +1234,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             lastHomeSlugRef.current = null;
           }
         } else {
-          const routeStackGroups = buildRouteStackGroups([
-            ...visibleEdges
-              .map((edge, index) => edgeRouteStackCandidate(
-                edge,
-                nodes,
-                routeSegmentFor(routeSegments, 'edge', edge.id),
-                index,
-              ))
-              .filter((candidate): candidate is RouteStackCandidate => Boolean(candidate)),
-            ...visibleLodgingRouteSegments
-              .map((segment, index) => lodgingRouteStackCandidate(
-                segment,
-                visibleEdges.length + index,
-              ))
-              .filter((candidate): candidate is RouteStackCandidate => Boolean(candidate)),
-          ]);
-
+          const focusedRouteId = hoveredEdgeId || activeEdgeId;
           visibleTransportRoutes.forEach((route) => {
             const routeSegment = routeSegmentFor(routeSegments, 'transport_node', route.id);
             const path = routePathForTransport(route, routeSegment).map(googleLatLng);
@@ -1303,8 +1318,10 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             if (rawPath.length < 2) return;
             rawPath.forEach(([lat, lng]) => remember(lat, lng));
             const path = rawPath.map(googleLatLng);
+            const isHovered = hoveredEdgeId === edge.id;
             const selected = activeEdgeId === edge.id;
-            const style = edgeLineStyle(edge, routeSegment, false, selected);
+            const muted = Boolean(focusedRouteId) && !isHovered && !selected;
+            const style = edgeLineStyle(edge, routeSegment, isHovered, selected, muted);
             const hoverStyle = edgeLineStyle(edge, routeSegment, true, selected);
             const midpoint = path[Math.floor(path.length / 2)];
             const label = edgeRouteLabel(edge, routeSegment);
@@ -1314,7 +1331,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeColor: ROUTE_HALO_COLOR,
               strokeOpacity: 0.9,
               strokeWeight: Number(style.weight || 3) + 5,
-              zIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 8,
+              zIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 8,
             });
             const line = new maps.Polyline({
               map: mapRef.current,
@@ -1322,7 +1339,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeColor: String(style.color || EDGE_ROUTE_COLOR),
               strokeOpacity: Number(style.opacity || 0.9),
               strokeWeight: Number(style.weight || 3),
-              zIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
+              zIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
             });
             routeVisuals.push({
               id: routeVisualId,
@@ -1332,11 +1349,12 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               weight: Number(style.weight || 3),
               opacity: Number(style.opacity || 0.9),
               haloWeight: Number(style.weight || 3) + 5,
-              lineZIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
-              haloZIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 8,
+              lineZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
+              haloZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 8,
             });
             line.addListener('click', () => setActiveEdgeId(edge.id));
             line.addListener('mouseover', () => {
+              setHoveredEdgeId(edge.id);
               clearRouteHover();
               focusRouteVisual(routeVisualId, String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR), Number(hoverStyle.weight || 5));
               line.setOptions({
@@ -1362,6 +1380,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               hoverInfoRef.current.open(mapRef.current);
             });
             line.addListener('mouseout', () => {
+              setHoveredEdgeId(null);
               resetRouteVisualFocus();
               clearRouteHover();
             });
@@ -1375,9 +1394,10 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             if (rawPath.length < 2) return;
             rawPath.forEach(([lat, lng]) => remember(lat, lng));
             const path = rawPath.map(googleLatLng);
+            const isHovered = hoveredEdgeId === routeVisualId;
             const selected = activeEdgeId === routeVisualId;
-            const muted = Boolean(activeEdgeId) && !selected;
-            const style = lodgingConnectionLineStyle(segment, false, selected, muted);
+            const muted = Boolean(focusedRouteId) && !isHovered && !selected;
+            const style = lodgingConnectionLineStyle(segment, isHovered, selected, muted);
             const hoverStyle = lodgingConnectionLineStyle(segment, true, selected);
             const midpoint = path[Math.floor(path.length / 2)];
             const label = lodgingConnectionLabel(segment);
@@ -1387,7 +1407,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeColor: ROUTE_HALO_COLOR,
               strokeOpacity: 0.9,
               strokeWeight: Number(style.weight || 3) + 5,
-              zIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 7,
+              zIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 7,
             });
             const line = new maps.Polyline({
               map: mapRef.current,
@@ -1395,7 +1415,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeColor: String(style.color || LODGING_ROUTE_COLOR),
               strokeOpacity: Number(style.opacity || 0.9),
               strokeWeight: Number(style.weight || 3),
-              zIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
+              zIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
             });
             routeVisuals.push({
               id: routeVisualId,
@@ -1405,11 +1425,12 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               weight: Number(style.weight || 3),
               opacity: Number(style.opacity || 0.9),
               haloWeight: Number(style.weight || 3) + 5,
-              lineZIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
-              haloZIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 7,
+              lineZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
+              haloZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 7,
             });
             line.addListener('click', () => setActiveEdgeId(routeVisualId));
             line.addListener('mouseover', () => {
+              setHoveredEdgeId(routeVisualId);
               clearRouteHover();
               focusRouteVisual(routeVisualId, String(hoverStyle.color || LODGING_ROUTE_HOVER_COLOR), Number(hoverStyle.weight || 5));
               line.setOptions({
@@ -1435,40 +1456,12 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               hoverInfoRef.current.open(mapRef.current);
             });
             line.addListener('mouseout', () => {
+              setHoveredEdgeId(null);
               resetRouteVisualFocus();
               clearRouteHover();
             });
             overlaysRef.current.push(halo);
             overlaysRef.current.push(line);
-          });
-
-          routeStackGroups.forEach((group) => {
-            group.members.forEach((member) => {
-              const marker = new maps.Marker({
-                map: mapRef.current,
-                position: googleLatLng(group.anchor),
-                title: member.label.title,
-                zIndex: ROUTE_HOVER_Z_INDEX + 20 + member.stackIndex,
-                icon: {
-                  url: routeStackHandleSvgUrl(member),
-                  scaledSize: new maps.Size(32, 18),
-                  anchor: new maps.Point(16 - routeStackHandleOffsetPx(member.stackIndex, member.stackSize), 24),
-                },
-              });
-              marker.addListener('click', () => setActiveEdgeId(member.stateId));
-              marker.addListener('mouseover', () => {
-                clearRouteHover();
-                focusRouteVisual(member.visualId, member.focusColor, member.focusWeight);
-                hoverInfoRef.current.setContent(routeStackLabelHtml(member));
-                hoverInfoRef.current.setPosition(googleLatLng(group.anchor));
-                hoverInfoRef.current.open(mapRef.current);
-              });
-              marker.addListener('mouseout', () => {
-                resetRouteVisualFocus();
-                clearRouteHover();
-              });
-              overlaysRef.current.push(marker);
-            });
           });
 
           visibleLodgings.forEach(({ lodging, stays }) => {
@@ -1533,7 +1526,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
       cancelled = true;
       clearGoogleHomeCameraTimers(homeCameraTimersRef);
     };
-  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
+  }, [activeEdgeId, activeNodeId, hoveredEdgeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -1564,8 +1557,10 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   nodes,
   activeNodeId,
   activeEdgeId,
+  hoveredEdgeId,
   setActiveNodeId,
   setActiveEdgeId,
+  setHoveredEdgeId,
   onSelectHomeTrip,
   onOpenHomeTrip,
 }) => {
@@ -1683,27 +1678,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
             overlaysRef.current.push(marker);
           });
         } else {
-          const routeStackGroups = buildRouteStackGroups([
-            ...visibleEdges
-              .map((edge, index) => {
-                const routeSegment = routeSegmentFor(routeSegments, 'edge', edge.id);
-                const pathPoints = routePathForEdge(edge, nodes, routeSegment, true);
-                const providerPath = routeSegment?.coordSystem === 'gcj02'
-                  ? pathPoints
-                  : pathPoints.map(([lat, lng]) => toProviderPoint(lat, lng, 'amap') as [number, number]);
-                return edgeRouteStackCandidate(edge, nodes, routeSegment, index, true, providerPath);
-              })
-              .filter((candidate): candidate is RouteStackCandidate => Boolean(candidate)),
-            ...visibleLodgingRouteSegments
-              .map((segment, index) => {
-                const pathPoints = routePathForSegment(segment, true);
-                const providerPath = segment.coordSystem === 'gcj02'
-                  ? pathPoints
-                  : pathPoints.map(([lat, lng]) => toProviderPoint(lat, lng, 'amap') as [number, number]);
-                return lodgingRouteStackCandidate(segment, visibleEdges.length + index, true, providerPath);
-              })
-              .filter((candidate): candidate is RouteStackCandidate => Boolean(candidate)),
-          ]);
+          const focusedRouteId = hoveredEdgeId || activeEdgeId;
           visibleTransportRoutes.forEach((route) => {
             const routeSegment = routeSegmentFor(routeSegments, 'transport_node', route.id);
             const pathPoints = routePathForTransport(route, routeSegment, true);
@@ -1781,8 +1756,10 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               : pathPoints.map(([lat, lng]) => toProviderPoint(lat, lng, 'amap') as [number, number]);
             providerPathPoints.forEach(([lat, lng]) => rememberProviderPoint(lat, lng));
             const path = providerPathPoints.map(([lat, lng]) => [lng, lat] as [number, number]);
+            const isHovered = hoveredEdgeId === edge.id;
             const selected = activeEdgeId === edge.id;
-            const style = edgeLineStyle(edge, routeSegment, false, selected);
+            const muted = Boolean(focusedRouteId) && !isHovered && !selected;
+            const style = edgeLineStyle(edge, routeSegment, isHovered, selected, muted);
             const hoverStyle = edgeLineStyle(edge, routeSegment, true, selected);
             const midpoint = path[Math.floor(path.length / 2)];
             const label = edgeRouteLabel(edge, routeSegment);
@@ -1793,7 +1770,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeOpacity: 0.92,
               strokeWeight: Number(style.weight || 3) + 5,
               strokeStyle: 'solid',
-              zIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 8,
+              zIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 8,
             });
             const line = new AMap.Polyline({
               map: mapRef.current,
@@ -1802,7 +1779,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeOpacity: Number(style.opacity || 0.9),
               strokeWeight: Number(style.weight || 3),
               strokeStyle: routeSegment?.status === 'failed' ? 'dashed' : 'solid',
-              zIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
+              zIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
             });
             routeVisuals.push({
               id: routeVisualId,
@@ -1812,11 +1789,12 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               weight: Number(style.weight || 3),
               opacity: Number(style.opacity || 0.9),
               haloWeight: Number(style.weight || 3) + 5,
-              lineZIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
-              haloZIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 8,
+              lineZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
+              haloZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 8,
             });
             line.on('click', () => setActiveEdgeId(edge.id));
             line.on('mouseover', () => {
+              setHoveredEdgeId(edge.id);
               clearRouteHover();
               focusRouteVisual(routeVisualId, String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR), Number(hoverStyle.weight || 5));
               line.setOptions({
@@ -1835,6 +1813,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               hoverInfoRef.current.open(mapRef.current, midpoint);
             });
             line.on('mouseout', () => {
+              setHoveredEdgeId(null);
               resetRouteVisualFocus();
               clearRouteHover();
             });
@@ -1850,9 +1829,10 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               : pathPoints.map(([lat, lng]) => toProviderPoint(lat, lng, 'amap') as [number, number]);
             providerPathPoints.forEach(([lat, lng]) => rememberProviderPoint(lat, lng));
             const path = providerPathPoints.map(([lat, lng]) => [lng, lat] as [number, number]);
+            const isHovered = hoveredEdgeId === routeVisualId;
             const selected = activeEdgeId === routeVisualId;
-            const muted = Boolean(activeEdgeId) && !selected;
-            const style = lodgingConnectionLineStyle(segment, false, selected, muted);
+            const muted = Boolean(focusedRouteId) && !isHovered && !selected;
+            const style = lodgingConnectionLineStyle(segment, isHovered, selected, muted);
             const hoverStyle = lodgingConnectionLineStyle(segment, true, selected);
             const midpoint = path[Math.floor(path.length / 2)];
             const label = lodgingConnectionLabel(segment);
@@ -1863,7 +1843,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeOpacity: 0.92,
               strokeWeight: Number(style.weight || 3) + 5,
               strokeStyle: 'solid',
-              zIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 7,
+              zIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 7,
             });
             const line = new AMap.Polyline({
               map: mapRef.current,
@@ -1872,7 +1852,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               strokeOpacity: Number(style.opacity || 0.9),
               strokeWeight: Number(style.weight || 3),
               strokeStyle: segment.status === 'failed' ? 'dashed' : 'dashed',
-              zIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
+              zIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
             });
             routeVisuals.push({
               id: routeVisualId,
@@ -1882,11 +1862,12 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               weight: Number(style.weight || 3),
               opacity: Number(style.opacity || 0.9),
               haloWeight: Number(style.weight || 3) + 5,
-              lineZIndex: selected ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
-              haloZIndex: selected ? ROUTE_HOVER_Z_INDEX - 1 : 7,
+              lineZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
+              haloZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 7,
             });
             line.on('click', () => setActiveEdgeId(routeVisualId));
             line.on('mouseover', () => {
+              setHoveredEdgeId(routeVisualId);
               clearRouteHover();
               focusRouteVisual(routeVisualId, String(hoverStyle.color || LODGING_ROUTE_HOVER_COLOR), Number(hoverStyle.weight || 5));
               line.setOptions({
@@ -1905,36 +1886,12 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               hoverInfoRef.current.open(mapRef.current, midpoint);
             });
             line.on('mouseout', () => {
+              setHoveredEdgeId(null);
               resetRouteVisualFocus();
               clearRouteHover();
             });
             overlaysRef.current.push(halo);
             overlaysRef.current.push(line);
-          });
-
-          routeStackGroups.forEach((group) => {
-            const position: [number, number] = [group.anchor[1], group.anchor[0]];
-            group.members.forEach((member) => {
-              const marker = new AMap.Marker({
-                map: mapRef.current,
-                position,
-                content: routeStackHandleHtml(member),
-                offset: new AMap.Pixel(-15, -8),
-                zIndex: ROUTE_HOVER_Z_INDEX + 20 + member.stackIndex,
-              });
-              marker.on('click', () => setActiveEdgeId(member.stateId));
-              marker.on('mouseover', () => {
-                clearRouteHover();
-                focusRouteVisual(member.visualId, member.focusColor, member.focusWeight);
-                hoverInfoRef.current.setContent(routeStackLabelHtml(member));
-                hoverInfoRef.current.open(mapRef.current, position);
-              });
-              marker.on('mouseout', () => {
-                resetRouteVisualFocus();
-                clearRouteHover();
-              });
-              overlaysRef.current.push(marker);
-            });
           });
 
           visibleLodgings.forEach(({ lodging, stays }) => {
@@ -1993,7 +1950,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [activeEdgeId, activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
+  }, [activeEdgeId, activeNodeId, hoveredEdgeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -2148,8 +2105,10 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     nodes,
     activeNodeId,
     activeEdgeId,
+    hoveredEdgeId,
     setActiveNodeId,
     setActiveEdgeId,
+    setHoveredEdgeId,
     onSelectHomeTrip,
     onOpenHomeTrip,
   };
@@ -2168,6 +2127,15 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
           />
         )}
         {activeProvider === 'google' ? <GoogleMapCanvas {...sdkMapProps} /> : <AmapCanvas {...sdkMapProps} />}
+        {mode === 'trip' && (
+          <RouteOverlapLegend
+            groups={routeStackGroups}
+            activeEdgeId={activeEdgeId}
+            hoveredEdgeId={hoveredEdgeId}
+            setActiveEdgeId={setActiveEdgeId}
+            setHoveredEdgeId={setHoveredEdgeId}
+          />
+        )}
       </div>
     );
   }
@@ -2181,6 +2149,15 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
           title={preview.node.title}
           onClose={() => setPreview(null)}
           onIndexChange={(index) => setPreview({ ...preview, index })}
+        />
+      )}
+      {mode === 'trip' && (
+        <RouteOverlapLegend
+          groups={routeStackGroups}
+          activeEdgeId={activeEdgeId}
+          hoveredEdgeId={hoveredEdgeId}
+          setActiveEdgeId={setActiveEdgeId}
+          setHoveredEdgeId={setHoveredEdgeId}
         />
       )}
       <ProviderMissingFallback provider={activeProvider}>
@@ -2356,38 +2333,6 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
             </React.Fragment>
           );
         })}
-
-        {mode === 'trip' && routeStackGroups.flatMap((group) =>
-          group.members.map((member) => {
-            const active = hoveredEdgeId === member.stateId || activeEdgeId === member.stateId;
-            return (
-              <Marker
-                key={`route-stack-${group.id}-${member.stateId}`}
-                position={group.anchor}
-                icon={routeStackHandleIcon(member, active)}
-                zIndexOffset={ROUTE_HOVER_Z_INDEX + 20 + member.stackIndex}
-                eventHandlers={{
-                  click: () => setActiveEdgeId(member.stateId),
-                  mouseover: () => setHoveredEdgeId(member.stateId),
-                  mouseout: () => setHoveredEdgeId(null),
-                }}
-              >
-                <Tooltip direction="top" offset={[0, -18]} opacity={0.98} permanent={active}>
-                  <div className="min-w-36 py-0.5 text-[10px] leading-tight">
-                    <div className="mb-1 inline-flex items-center gap-1.5 rounded-full bg-slate-50 px-2 py-0.5 font-black text-slate-600">
-                      <span className="inline-block h-1 w-5 rounded-full" style={{ background: member.color }} />
-                      同路段路线
-                    </div>
-                    <div className="font-black text-slate-950">{member.label.title}</div>
-                    <div className="mt-0.5 font-bold text-slate-500">{member.label.subtitle}</div>
-                    {member.label.metric && <div className="mt-1 font-black text-rose-600">{member.label.metric}</div>}
-                    {member.label.warning && <div className="mt-0.5 font-bold text-amber-600">{member.label.warning}</div>}
-                  </div>
-                </Tooltip>
-              </Marker>
-            );
-          })
-        )}
 
         {/* Draw Nodes MapPins */}
         {mode === 'trip' && visibleNodes.map((node) => (
