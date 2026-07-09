@@ -521,10 +521,49 @@ const ROUTE_STACK_GRID_DEGREES = 0.0022;
 const ROUTE_STACK_MIN_SHARED_CELLS = 3;
 const ROUTE_STACK_MAX_GROUPS = 14;
 const ROUTE_STACK_MAX_MEMBERS = 5;
-const ROUTE_LANE_OFFSET_PX = 5.5;
 
-const routeLaneOffsetPx = (index: number, count: number) =>
-  count <= 1 ? 0 : (index - (count - 1) / 2) * ROUTE_LANE_OFFSET_PX;
+const routeStackHandleOffsetPx = (index: number, count: number) => (index - (count - 1) / 2) * 24;
+
+const routeStackHandleHtml = (member: RouteStackMember, emphasized = false) => `
+  <div style="
+    transform:translate(${routeStackHandleOffsetPx(member.stackIndex, member.stackSize)}px,-18px);
+    width:28px;height:14px;border-radius:999px;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(255,255,255,.94);
+    border:1px solid rgba(148,163,184,.55);
+    box-shadow:0 8px 18px rgba(15,23,42,.22),0 0 0 ${emphasized ? 3 : 1}px rgba(255,255,255,.7);
+    cursor:pointer;
+  ">
+    <span style="width:18px;height:4px;border-radius:999px;background:${member.color};display:block"></span>
+  </div>
+`;
+
+const routeStackHandleIcon = (member: RouteStackMember, emphasized = false) => L.divIcon({
+  className: 'route-stack-handle-marker',
+  html: routeStackHandleHtml(member, emphasized),
+  iconSize: [30, 16],
+  iconAnchor: [15, 8],
+});
+
+const routeStackHandleSvgUrl = (member: RouteStackMember) => {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="18" viewBox="0 0 32 18">
+      <rect x="1" y="1" width="30" height="16" rx="8" fill="white" fill-opacity=".96" stroke="#cbd5e1"/>
+      <path d="M8 9h16" stroke="${member.color}" stroke-width="4" stroke-linecap="round"/>
+    </svg>
+  `;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+};
+
+const routeStackLabelHtml = (member: RouteStackMember) => `
+  <div style="font-family:Inter,system-ui,sans-serif">
+    <div style="margin-bottom:6px;display:inline-flex;align-items:center;gap:6px;border-radius:999px;background:#f8fafc;color:#475569;padding:3px 8px;font-size:10px;font-weight:900">
+      <span style="width:18px;height:4px;border-radius:999px;background:${member.color};display:inline-block"></span>
+      同路段路线
+    </div>
+    ${routeLabelHtml(member.label)}
+  </div>
+`;
 
 const routeCellKey = (lat: number, lng: number) =>
   `${Math.round(lat / ROUTE_STACK_GRID_DEGREES)}:${Math.round(lng / ROUTE_STACK_GRID_DEGREES)}`;
@@ -689,67 +728,6 @@ const buildRouteStackGroups = (candidates: RouteStackCandidate[]): RouteStackGro
   return groups
     .sort((left, right) => right.members.length - left.members.length)
     .slice(0, ROUTE_STACK_MAX_GROUPS);
-};
-
-const routeLaneOffsetsFromGroups = (groups: RouteStackGroup[]) => {
-  const offsets = new Map<string, number>();
-  groups.forEach((group) => {
-    group.members.forEach((member) => {
-      offsets.set(member.visualId, routeLaneOffsetPx(member.stackIndex, member.stackSize));
-    });
-  });
-  return offsets;
-};
-
-const clampMercatorLat = (lat: number) => Math.max(-85.05112878, Math.min(85.05112878, lat));
-
-const latLngToMercatorPixel = ([lat, lng]: [number, number], zoom: number) => {
-  const scale = 256 * (2 ** zoom);
-  const safeLat = clampMercatorLat(lat);
-  const sinLat = Math.sin(toRadians(safeLat));
-  return {
-    x: ((lng + 180) / 360) * scale,
-    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale,
-  };
-};
-
-const mercatorPixelToLatLng = ({ x, y }: { x: number; y: number }, zoom: number): [number, number] => {
-  const scale = 256 * (2 ** zoom);
-  const lng = (x / scale) * 360 - 180;
-  const mercatorY = Math.PI * (1 - 2 * y / scale);
-  const lat = toDegrees(Math.atan(Math.sinh(mercatorY)));
-  return [lat, lng];
-};
-
-const normalizedPixelNormal = (from: { x: number; y: number }, to: { x: number; y: number }) => {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const length = Math.hypot(dx, dy);
-  if (length < 0.001) return { x: 0, y: 0 };
-  return { x: -dy / length, y: dx / length };
-};
-
-const offsetRoutePath = (path: [number, number][], offsetPx: number, zoom: number): [number, number][] => {
-  if (Math.abs(offsetPx) < 0.1 || path.length < 2) return path;
-  const safeZoom = Math.max(2, Math.min(19, Number.isFinite(zoom) ? zoom : 9));
-  const points = path.map((point) => latLngToMercatorPixel(point, safeZoom));
-  const segmentNormals = points.slice(1).map((point, index) => normalizedPixelNormal(points[index], point));
-
-  return points.map((point, index) => {
-    const previous = segmentNormals[Math.max(0, index - 1)];
-    const next = segmentNormals[Math.min(segmentNormals.length - 1, index)];
-    let normal = index === 0 ? next : index === points.length - 1 ? previous : {
-      x: previous.x + next.x,
-      y: previous.y + next.y,
-    };
-    const normalLength = Math.hypot(normal.x, normal.y);
-    if (normalLength < 0.001) normal = next;
-    else normal = { x: normal.x / normalLength, y: normal.y / normalLength };
-    return mercatorPixelToLatLng({
-      x: point.x + normal.x * offsetPx,
-      y: point.y + normal.y * offsetPx,
-    }, safeZoom);
-  });
 };
 
 const transportIconType = (route: ItineraryNode) => {
@@ -1241,8 +1219,6 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               ))
               .filter((candidate): candidate is RouteStackCandidate => Boolean(candidate)),
           ]);
-          const routeLaneOffsets = routeLaneOffsetsFromGroups(routeStackGroups);
-          const routeLaneZoom = Number(mapRef.current?.getZoom?.() ?? 9);
 
           visibleTransportRoutes.forEach((route) => {
             const routeSegment = routeSegmentFor(routeSegments, 'transport_node', route.id);
@@ -1326,7 +1302,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             const rawPath = routePathForEdge(edge, nodes, routeSegment);
             if (rawPath.length < 2) return;
             rawPath.forEach(([lat, lng]) => remember(lat, lng));
-            const path = offsetRoutePath(rawPath, routeLaneOffsets.get(routeVisualId) || 0, routeLaneZoom).map(googleLatLng);
+            const path = rawPath.map(googleLatLng);
             const selected = activeEdgeId === edge.id;
             const style = edgeLineStyle(edge, routeSegment, false, selected);
             const hoverStyle = edgeLineStyle(edge, routeSegment, true, selected);
@@ -1398,7 +1374,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             const rawPath = routePathForSegment(segment);
             if (rawPath.length < 2) return;
             rawPath.forEach(([lat, lng]) => remember(lat, lng));
-            const path = offsetRoutePath(rawPath, routeLaneOffsets.get(routeVisualId) || 0, routeLaneZoom).map(googleLatLng);
+            const path = rawPath.map(googleLatLng);
             const selected = activeEdgeId === routeVisualId;
             const muted = Boolean(activeEdgeId) && !selected;
             const style = lodgingConnectionLineStyle(segment, false, selected, muted);
@@ -1464,6 +1440,35 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             });
             overlaysRef.current.push(halo);
             overlaysRef.current.push(line);
+          });
+
+          routeStackGroups.forEach((group) => {
+            group.members.forEach((member) => {
+              const marker = new maps.Marker({
+                map: mapRef.current,
+                position: googleLatLng(group.anchor),
+                title: member.label.title,
+                zIndex: ROUTE_HOVER_Z_INDEX + 20 + member.stackIndex,
+                icon: {
+                  url: routeStackHandleSvgUrl(member),
+                  scaledSize: new maps.Size(32, 18),
+                  anchor: new maps.Point(16 - routeStackHandleOffsetPx(member.stackIndex, member.stackSize), 24),
+                },
+              });
+              marker.addListener('click', () => setActiveEdgeId(member.stateId));
+              marker.addListener('mouseover', () => {
+                clearRouteHover();
+                focusRouteVisual(member.visualId, member.focusColor, member.focusWeight);
+                hoverInfoRef.current.setContent(routeStackLabelHtml(member));
+                hoverInfoRef.current.setPosition(googleLatLng(group.anchor));
+                hoverInfoRef.current.open(mapRef.current);
+              });
+              marker.addListener('mouseout', () => {
+                resetRouteVisualFocus();
+                clearRouteHover();
+              });
+              overlaysRef.current.push(marker);
+            });
           });
 
           visibleLodgings.forEach(({ lodging, stays }) => {
@@ -1699,9 +1704,6 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               })
               .filter((candidate): candidate is RouteStackCandidate => Boolean(candidate)),
           ]);
-          const routeLaneOffsets = routeLaneOffsetsFromGroups(routeStackGroups);
-          const routeLaneZoom = Number(mapRef.current?.getZoom?.() ?? 9);
-
           visibleTransportRoutes.forEach((route) => {
             const routeSegment = routeSegmentFor(routeSegments, 'transport_node', route.id);
             const pathPoints = routePathForTransport(route, routeSegment, true);
@@ -1778,8 +1780,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               ? pathPoints
               : pathPoints.map(([lat, lng]) => toProviderPoint(lat, lng, 'amap') as [number, number]);
             providerPathPoints.forEach(([lat, lng]) => rememberProviderPoint(lat, lng));
-            const path = offsetRoutePath(providerPathPoints, routeLaneOffsets.get(routeVisualId) || 0, routeLaneZoom)
-              .map(([lat, lng]) => [lng, lat] as [number, number]);
+            const path = providerPathPoints.map(([lat, lng]) => [lng, lat] as [number, number]);
             const selected = activeEdgeId === edge.id;
             const style = edgeLineStyle(edge, routeSegment, false, selected);
             const hoverStyle = edgeLineStyle(edge, routeSegment, true, selected);
@@ -1848,8 +1849,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               ? pathPoints
               : pathPoints.map(([lat, lng]) => toProviderPoint(lat, lng, 'amap') as [number, number]);
             providerPathPoints.forEach(([lat, lng]) => rememberProviderPoint(lat, lng));
-            const path = offsetRoutePath(providerPathPoints, routeLaneOffsets.get(routeVisualId) || 0, routeLaneZoom)
-              .map(([lat, lng]) => [lng, lat] as [number, number]);
+            const path = providerPathPoints.map(([lat, lng]) => [lng, lat] as [number, number]);
             const selected = activeEdgeId === routeVisualId;
             const muted = Boolean(activeEdgeId) && !selected;
             const style = lodgingConnectionLineStyle(segment, false, selected, muted);
@@ -1910,6 +1910,31 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
             });
             overlaysRef.current.push(halo);
             overlaysRef.current.push(line);
+          });
+
+          routeStackGroups.forEach((group) => {
+            const position: [number, number] = [group.anchor[1], group.anchor[0]];
+            group.members.forEach((member) => {
+              const marker = new AMap.Marker({
+                map: mapRef.current,
+                position,
+                content: routeStackHandleHtml(member),
+                offset: new AMap.Pixel(-15, -8),
+                zIndex: ROUTE_HOVER_Z_INDEX + 20 + member.stackIndex,
+              });
+              marker.on('click', () => setActiveEdgeId(member.stateId));
+              marker.on('mouseover', () => {
+                clearRouteHover();
+                focusRouteVisual(member.visualId, member.focusColor, member.focusWeight);
+                hoverInfoRef.current.setContent(routeStackLabelHtml(member));
+                hoverInfoRef.current.open(mapRef.current, position);
+              });
+              marker.on('mouseout', () => {
+                resetRouteVisualFocus();
+                clearRouteHover();
+              });
+              overlaysRef.current.push(marker);
+            });
           });
 
           visibleLodgings.forEach(({ lodging, stays }) => {
@@ -2064,9 +2089,6 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
       ))
       .filter((candidate): candidate is RouteStackCandidate => Boolean(candidate)),
   ]);
-  const routeLaneOffsets = routeLaneOffsetsFromGroups(routeStackGroups);
-  const leafletRouteLaneZoom = 9;
-
   const fitPoints: [number, number][] = [
     ...visibleNodes.map((node) => [node.lat, node.lng] as [number, number]),
     ...visibleLodgings.map(({ lodging }) => [lodging.lat, lodging.lng] as [number, number]),
@@ -2085,10 +2107,8 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     const tarNode = nodes.find(n => n.id === edge.target);
     if (!srcNode || !tarNode) return null;
     const routeSegment = routeSegmentLookup.get(routeSegmentKey('edge', edge.id));
-    const routeVisualId = `edge:${edge.id}`;
-    const rawPositions = routePathForEdge(edge, nodes, routeSegment);
-    if (rawPositions.length < 2) return null;
-    const positions = offsetRoutePath(rawPositions, routeLaneOffsets.get(routeVisualId) || 0, leafletRouteLaneZoom);
+    const positions = routePathForEdge(edge, nodes, routeSegment);
+    if (positions.length < 2) return null;
 
     return {
       positions,
@@ -2289,9 +2309,8 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
 
         {mode === 'trip' && visibleLodgingRouteSegments.map((segment) => {
           const routeStateId = `lodging:${segment.id}`;
-          const rawPositions = routePathForSegment(segment);
-          if (rawPositions.length < 2) return null;
-          const positions = offsetRoutePath(rawPositions, routeLaneOffsets.get(routeStateId) || 0, leafletRouteLaneZoom);
+          const positions = routePathForSegment(segment);
+          if (positions.length < 2) return null;
           const isHovered = hoveredEdgeId === routeStateId;
           const selected = activeEdgeId === routeStateId;
           const muted = Boolean(focusedEdgeId) && !isHovered && !selected;
@@ -2337,6 +2356,38 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
             </React.Fragment>
           );
         })}
+
+        {mode === 'trip' && routeStackGroups.flatMap((group) =>
+          group.members.map((member) => {
+            const active = hoveredEdgeId === member.stateId || activeEdgeId === member.stateId;
+            return (
+              <Marker
+                key={`route-stack-${group.id}-${member.stateId}`}
+                position={group.anchor}
+                icon={routeStackHandleIcon(member, active)}
+                zIndexOffset={ROUTE_HOVER_Z_INDEX + 20 + member.stackIndex}
+                eventHandlers={{
+                  click: () => setActiveEdgeId(member.stateId),
+                  mouseover: () => setHoveredEdgeId(member.stateId),
+                  mouseout: () => setHoveredEdgeId(null),
+                }}
+              >
+                <Tooltip direction="top" offset={[0, -18]} opacity={0.98} permanent={active}>
+                  <div className="min-w-36 py-0.5 text-[10px] leading-tight">
+                    <div className="mb-1 inline-flex items-center gap-1.5 rounded-full bg-slate-50 px-2 py-0.5 font-black text-slate-600">
+                      <span className="inline-block h-1 w-5 rounded-full" style={{ background: member.color }} />
+                      同路段路线
+                    </div>
+                    <div className="font-black text-slate-950">{member.label.title}</div>
+                    <div className="mt-0.5 font-bold text-slate-500">{member.label.subtitle}</div>
+                    {member.label.metric && <div className="mt-1 font-black text-rose-600">{member.label.metric}</div>}
+                    {member.label.warning && <div className="mt-0.5 font-bold text-amber-600">{member.label.warning}</div>}
+                  </div>
+                </Tooltip>
+              </Marker>
+            );
+          })
+        )}
 
         {/* Draw Nodes MapPins */}
         {mode === 'trip' && visibleNodes.map((node) => (
