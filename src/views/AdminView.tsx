@@ -1405,6 +1405,27 @@ export default function AdminView() {
     setActiveDay(stay.check_in_day || currentDay);
   };
 
+  const lodgingStaysFor = (lodgingId: string) => (staysByLodgingId[lodgingId] || [])
+    .slice()
+    .sort((a, b) => a.check_in_date.localeCompare(b.check_in_date) || a.check_in_time.localeCompare(b.check_in_time));
+
+  const preferredStayForLodging = (lodging: Lodging) => {
+    const lodgingStays = lodgingStaysFor(lodging.id);
+    return lodgingStays.find((stay) => stay.check_in_day <= currentDay && stay.check_out_day >= currentDay)
+      || lodgingStays.find((stay) => stay.check_in_day >= currentDay)
+      || lodgingStays.at(-1)
+      || null;
+  };
+
+  const openLodging = (lodging: Lodging) => {
+    const stay = preferredStayForLodging(lodging);
+    if (stay) {
+      editStay(stay);
+      return;
+    }
+    arrangeLodging(lodging);
+  };
+
   const updateStayCheckInDate = (date: string) => {
     setStayForm((current) => {
       const nextDay = dayForDate(date, dateByDay, trip?.start_date) || current.check_in_day || currentDay;
@@ -2266,9 +2287,8 @@ export default function AdminView() {
                 </div>
                 {filteredLodgings.map((lodging) => {
                   const coverUrl = lodgingImageUrl(lodging);
-                  const lodgingStays = (staysByLodgingId[lodging.id] || [])
-                    .slice()
-                    .sort((a, b) => a.check_in_date.localeCompare(b.check_in_date) || a.check_in_time.localeCompare(b.check_in_time));
+                  const lodgingStays = lodgingStaysFor(lodging.id);
+                  const hasStays = lodgingStays.length > 0;
                   return (
                     <article
                       key={lodging.id}
@@ -2277,9 +2297,9 @@ export default function AdminView() {
                       <div className="flex items-stretch gap-3">
                         <button
                           type="button"
-                          onClick={() => arrangeLodging(lodging)}
+                          onClick={() => openLodging(lodging)}
                           className="relative h-[74px] w-[92px] shrink-0 overflow-hidden rounded-xl border border-white/70 bg-white/65 text-slate-400 transition hover:scale-[1.01]"
-                          aria-label={`安排住宿 ${lodging.name}`}
+                          aria-label={`${hasStays ? '编辑' : '安排'}住宿 ${lodging.name}`}
                         >
                           {coverUrl ? (
                             <img src={coverUrl} alt="" className="h-full w-full object-cover" />
@@ -2292,19 +2312,31 @@ export default function AdminView() {
                         </button>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-start justify-between gap-2">
-                            <button type="button" onClick={() => arrangeLodging(lodging)} className="min-w-0 text-left">
+                            <button type="button" onClick={() => openLodging(lodging)} className="min-w-0 text-left">
                               <h4 className="truncate text-xs font-black text-slate-900">{lodging.name}</h4>
                               <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-slate-500">
                                 {lodging.city || lodging.address || '住宿地址待补充'}
                               </p>
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => arrangeLodging(lodging)}
-                              className="shrink-0 rounded-lg border border-white/80 bg-white px-2 py-1 text-[9px] font-black text-emerald-700 shadow-sm transition hover:border-emerald-200"
-                            >
-                              安排
-                            </button>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => openLodging(lodging)}
+                                className="rounded-lg border border-white/80 bg-white px-2 py-1 text-[9px] font-black text-emerald-700 shadow-sm transition hover:border-emerald-200"
+                              >
+                                {hasStays ? '编辑' : '安排'}
+                              </button>
+                              {hasStays && (
+                                <button
+                                  type="button"
+                                  onClick={() => arrangeLodging(lodging)}
+                                  className="rounded-lg border border-emerald-100 bg-emerald-100/80 px-2 py-1 text-[9px] font-black text-emerald-700 transition hover:bg-emerald-200"
+                                  aria-label={`新增 ${lodging.name} 的入住区间`}
+                                >
+                                  + 区间
+                                </button>
+                              )}
+                            </div>
                           </div>
                           {lodgingStays.length > 0 ? (
                             <div className="mt-2 flex gap-1 overflow-x-auto pb-0.5">

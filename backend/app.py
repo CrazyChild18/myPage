@@ -2210,6 +2210,31 @@ def stay_payload(db, slug, payload, existing=None):
     }
 
 
+def stay_datetime(date, time_value):
+    return datetime.datetime.fromisoformat(f"{date}T{time_value}")
+
+
+def find_overlapping_stay(db, slug, item, exclude_stay_id=None):
+    if item["status"] == "cancelled":
+        return None
+    start_at = stay_datetime(item["check_in_date"], item["check_in_time"])
+    end_at = stay_datetime(item["check_out_date"], item["check_out_time"])
+    rows = db.execute(
+        """SELECT id, check_in_date, check_in_time, check_out_date, check_out_time
+        FROM stays
+        WHERE trip_slug = ? AND lodging_id = ? AND status != 'cancelled'""",
+        (slug, item["lodging_id"]),
+    ).fetchall()
+    for row in rows:
+        if exclude_stay_id and row["id"] == exclude_stay_id:
+            continue
+        existing_start = stay_datetime(row["check_in_date"], row["check_in_time"])
+        existing_end = stay_datetime(row["check_out_date"], row["check_out_time"])
+        if start_at < existing_end and end_at > existing_start:
+            return row
+    return None
+
+
 def edge_payload(payload, existing):
     source = {**dict(existing), **payload}
     transport_type = str(source.get("transportType") or source.get("transport_type") or "car").strip()
@@ -2374,6 +2399,8 @@ def create_stay(slug):
         except (ValueError, TypeError) as error:
             return jsonify({"error": str(error)}), 400
         stay_id = payload.get("id") or f"stay-{os.urandom(6).hex()}"
+        if find_overlapping_stay(db, slug, item, stay_id):
+            return jsonify({"error": "该住宿在所选时间已有入住区间，请编辑已有区间或调整日期"}), 409
         db.execute(
             """INSERT INTO stays
             (id, trip_slug, lodging_id, check_in_day, check_in_date, check_in_time,
@@ -2397,6 +2424,8 @@ def update_stay(slug, stay_id):
             item = stay_payload(db, slug, payload, existing)
         except (ValueError, TypeError) as error:
             return jsonify({"error": str(error)}), 400
+        if find_overlapping_stay(db, slug, item, stay_id):
+            return jsonify({"error": "该住宿在所选时间已有入住区间，请编辑已有区间或调整日期"}), 409
         db.execute(
             """UPDATE stays SET lodging_id=?, check_in_day=?, check_in_date=?, check_in_time=?,
             check_out_day=?, check_out_date=?, check_out_time=?, guests=?, room_type=?,
