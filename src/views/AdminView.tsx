@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowRight,
   BedDouble,
@@ -11,6 +12,7 @@ import {
   LockKeyhole,
   LoaderCircle,
   MapPin,
+  Pencil,
   Plane,
   Plus,
   RefreshCw,
@@ -25,7 +27,6 @@ import {
   X,
 } from 'lucide-react';
 import LocationPicker from '../components/LocationPicker/LocationPicker';
-import MapView from '../components/Map/MapView';
 import { useItineraryStore } from '../store/useItineraryStore';
 import { ActivitySubtype, EdgeAnchor, EdgeDisplayStatus, EdgeTransportType, ItineraryEdge, ItineraryNode, ItineraryType, Lodging, Stay, TransportMode } from '../types';
 import { mapProviderForTrip } from '../map/provider';
@@ -846,6 +847,7 @@ export default function AdminView() {
   const formSubmitSaving = nonNodeSaving || editingNodeSyncing;
   const [form, setForm] = useState(emptyForm({ day: currentDay, date: currentDate }));
   const [editorMode, setEditorMode] = useState<'item' | 'lodging'>('item');
+  const [editorOpen, setEditorOpen] = useState(false);
   const [editingLodgingId, setEditingLodgingId] = useState<string | null>(null);
   const [editingStayId, setEditingStayId] = useState<string | null>(null);
   const [lodgingForm, setLodgingForm] = useState<Lodging>(() => emptyLodgingDraft());
@@ -881,6 +883,7 @@ export default function AdminView() {
   const draggedStartVisibleRef = useRef<number | null>(null);
   const draggedOriginPointerRef = useRef<number | null>(null);
   const dragPreviewRef = useRef<ScheduleDragPreview | null>(null);
+  const suppressLibraryClickRef = useRef(false);
   const inputClass = 'mt-1.5 w-full rounded-xl border border-slate-200 bg-white/85 px-3 py-2.5 text-xs outline-none transition focus:border-indigo-400';
 
   const clearDragPreview = () => {
@@ -990,6 +993,7 @@ export default function AdminView() {
 
   useEffect(() => {
     if (!editingEdge) return;
+    setEditorOpen(true);
     setEditorMode('item');
     setEditingLodgingId(null);
     setEditingStayId(null);
@@ -1000,6 +1004,15 @@ export default function AdminView() {
       isLocked: editingEdge.isLocked ?? true,
     });
   }, [editingEdge]);
+
+  useEffect(() => {
+    if (!editorOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') reset();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [editorOpen]);
 
   const currentDayNodes = useMemo(
     () => sortedNodes.filter((node) => node.type !== 'hotel' && isScheduledNode(node) && scheduleSegmentForDay(node, currentDay, dateByDay, trip?.start_date)),
@@ -1336,6 +1349,7 @@ export default function AdminView() {
   };
   const reset = ({ cleanupPending = true, kind = 'point', time = '12:00', scheduled = false }: { cleanupPending?: boolean; kind?: 'point' | 'transport'; time?: string; scheduled?: boolean } = {}) => {
     if (cleanupPending) cleanupPendingUploads();
+    setEditorOpen(false);
     const base = {
       ...emptyForm({ day: currentDay, date: currentDate, time, kind, scheduled }),
       timezone: currentDayTimezone,
@@ -1357,6 +1371,7 @@ export default function AdminView() {
 
   const setLodgingEditor = (lodging: Lodging, stay: Stay, options: { editingLodgingId?: string | null; editingStayId?: string | null } = {}) => {
     cleanupPendingUploads();
+    setEditorOpen(true);
     setEditorMode('lodging');
     setEditingId(null);
     setActiveNodeId(null);
@@ -1482,6 +1497,7 @@ export default function AdminView() {
       setLodgingForm(lodgingPayload);
       setStayForm(stayPayload);
       setPendingUploadUrls([]);
+      setEditorOpen(false);
       toast(editingStayId ? `已保存住宿：${name}` : `已安排住宿：${name}`);
     } catch (error) {
       toast(error instanceof Error ? error.message : '住宿保存失败，请检查输入内容');
@@ -1506,7 +1522,7 @@ export default function AdminView() {
     try {
       await deleteLodging(editingLodgingId);
       toast(`已删除住宿：${lodgingForm.name}`);
-      startNewLodging();
+      reset({ cleanupPending: false });
     } catch {
       toast('删除住宿失败，请重试');
     }
@@ -1518,6 +1534,7 @@ export default function AdminView() {
     const scheduled = isScheduledNode(node);
     const kind = node.type === 'transport' ? 'transport' : 'point';
     setEditorMode('item');
+    setEditorOpen(true);
     setEditingLodgingId(null);
     setEditingStayId(null);
     setEditingId(id);
@@ -1572,6 +1589,8 @@ export default function AdminView() {
         isManual: true,
         isLocked: edgeDraft.isLocked,
       });
+      setActiveEdgeId(null);
+      setEditorOpen(false);
       toast(`已更新路段：${edgeTransportLabel(edgeDraft.transportType)}`);
     } catch {
       toast('路段保存失败，请检查路线服务');
@@ -2122,60 +2141,12 @@ export default function AdminView() {
     void unscheduleNode(nodeId);
   };
 
-  const switchEditorMode = (next: 'point' | 'transport') => {
-    if (editingExistingTransport) {
-      toast('交通项目需删除后重新录入');
-      return;
-    }
-    setEditorMode('item');
-    setEditingLodgingId(null);
-    setEditingStayId(null);
-
-    if (next === 'transport') {
-      setForm((current) => ({
-        ...current,
-        type: 'transport',
-        transport_mode: current.transport_mode || 'flight',
-        day: current.day || currentDay,
-        date: current.date || currentDate,
-        time: current.time || '12:00',
-        timezone: current.timezone || currentDayTimezone,
-        departure_timezone: current.departure_timezone || current.timezone || currentDayTimezone,
-        arrival_timezone: current.arrival_timezone || current.timezone || currentDayTimezone,
-        status: current.status === 'unscheduled' ? 'planned' : current.status,
-        arrival_date: current.arrival_date || current.date || currentDate,
-        arrival_time: current.arrival_time || '14:00',
-        end_day: current.end_day || current.day || currentDay,
-        end_date: current.end_date || current.arrival_date || current.date || currentDate,
-        end_time: current.end_time || current.arrival_time || '14:00',
-      }));
-      return;
-    }
-
-    setForm((current) => ({
-      ...current,
-      type: current.type === 'transport' ? 'activity' : current.type === 'hotel' ? 'activity' : current.type,
-      activity_subtype: current.type === 'transport' ? 'sightseeing' : activitySubtypeOf(current),
-      day: current.type === 'transport' ? 0 : current.day,
-      date: current.type === 'transport' ? '' : current.date,
-      time: current.type === 'transport' ? '' : current.time,
-      end_day: current.type === 'transport' ? 0 : current.end_day,
-      end_date: current.type === 'transport' ? '' : current.end_date,
-      end_time: current.type === 'transport' ? '' : current.end_time,
-      timezone: current.type === 'transport' ? currentDayTimezone : current.timezone,
-      departure_timezone: current.type === 'transport' ? '' : current.departure_timezone,
-      arrival_timezone: current.type === 'transport' ? '' : current.arrival_timezone,
-      status: current.type === 'transport' ? 'unscheduled' : current.status,
-      arrival_date: '',
-      arrival_time: '',
-    }));
-  };
-
   const startNew = (kind: 'point' | 'transport', time = '12:00', scheduled = kind === 'transport') => {
     setEditorMode('item');
     setEditingLodgingId(null);
     setEditingStayId(null);
     reset({ kind, time, scheduled });
+    setEditorOpen(true);
   };
 
   const cancelPointSchedule = async () => {
@@ -2195,11 +2166,155 @@ export default function AdminView() {
     }
   };
 
+  const editorTitle = editingEdge
+    ? '路段设置'
+    : editorMode === 'lodging'
+      ? editingStayId
+        ? '编辑住宿'
+        : editingLodgingId
+          ? '安排住宿'
+          : '新增住宿'
+      : form.type === 'transport'
+        ? editingId
+          ? '编辑交通'
+          : '新增交通'
+        : editingId
+          ? '编辑地点'
+          : '新增地点';
+
+  const editorSubtitle = editingEdge
+    ? `${editingEdgeSource?.title || '起点'} → ${editingEdgeTarget?.title || '终点'}`
+    : editorMode === 'lodging'
+      ? `${editingStayId ? '入住区间' : '新增入住'} · ${stayCheckInDate} ${stayForm.check_in_time || '15:00'} → ${stayCheckOutDate} ${stayForm.check_out_time || '11:00'}`
+      : form.type === 'transport'
+        ? `交通 · ${form.date || currentDate} · ${form.time || '12:00'}`
+        : isScheduledNode({ id: editingId || 'draft', ...form })
+          ? `地点 · 已排期 ${form.date} · ${form.time}`
+          : '地点 · 待排期';
+
+  const lodgingLocationPanel = (
+    <aside className="space-y-3 rounded-2xl border border-emerald-100 bg-emerald-50/45 p-3 shadow-inner shadow-emerald-100/40">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 text-xs font-black text-emerald-700">
+            <MapPin className="h-4 w-4" />地图定位
+          </div>
+          <div className="mt-1 truncate text-[10px] font-semibold text-slate-500">
+            {lodgingForm.city || lodgingForm.address || lodgingForm.name || '住宿位置'}
+          </div>
+        </div>
+        <span className="shrink-0 rounded-full border border-emerald-100 bg-white/80 px-2 py-1 text-[9px] font-black text-emerald-700">
+          住宿
+        </span>
+      </div>
+      <LocationPicker provider={mapProvider} value={{ lat: lodgingForm.lat, lng: lodgingForm.lng, city: lodgingForm.city, address: lodgingForm.address, title: lodgingForm.name, place_provider: lodgingForm.place_provider, provider_place_id: lodgingForm.provider_place_id, coord_system: lodgingForm.coord_system }} onChange={(location) => setLodgingForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, name: current.name || location.title || '', place_provider: location.place_provider || current.place_provider || 'manual', provider_place_id: location.provider_place_id || current.provider_place_id || '', coord_system: location.coord_system || current.coord_system || 'wgs84', timezone: inferTimeZoneFromLocation({ place: location.title || current.name, city: location.city, address: location.address, lat: location.lat, lng: location.lng, fallback: current.timezone || currentDayTimezone }) }))} />
+    </aside>
+  );
+
+  const transportLocationPanel = (
+    <aside className="space-y-3">
+      <div className="rounded-2xl border border-sky-100 bg-sky-50/55 p-3 shadow-inner shadow-sky-100/40">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5 text-xs font-black text-sky-700">
+            <ArrowRight className="h-4 w-4 rotate-180" />出发地
+          </div>
+          <span className="rounded-full border border-sky-100 bg-white/80 px-2 py-1 text-[9px] font-black text-sky-700">
+            起点
+          </span>
+        </div>
+        <label className="mb-2 block text-xs font-semibold text-slate-700">
+          <input required value={form.departure_place} onChange={(event) => setForm({ ...form, departure_place: event.target.value })} placeholder="机场、车站或集合点" className={inputClass} />
+        </label>
+        <LocationPicker compact provider={mapProvider} value={{ lat: form.departure_lat ?? form.lat, lng: form.departure_lng ?? form.lng, title: form.departure_place }} onChange={(location) => setForm((current) => ({
+          ...current,
+          departure_place: location.title || current.departure_place,
+          departure_lat: location.lat,
+          departure_lng: location.lng,
+          coord_system: location.coord_system || current.coord_system || 'wgs84',
+          departure_place_provider: location.place_provider || current.departure_place_provider || 'manual',
+          departure_provider_place_id: location.provider_place_id || current.departure_provider_place_id || '',
+          departure_timezone: inferTimeZoneFromLocation({
+            place: location.title || current.departure_place,
+            city: location.city,
+            address: location.address,
+            lat: location.lat,
+            lng: location.lng,
+            fallback: current.departure_timezone || currentDayTimezone,
+          }),
+        }))} />
+      </div>
+
+      <div className="rounded-2xl border border-sky-100 bg-white/70 p-3 shadow-inner shadow-sky-100/30">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5 text-xs font-black text-sky-700">
+            <ArrowRight className="h-4 w-4" />到达地
+          </div>
+          <span className="rounded-full border border-sky-100 bg-sky-50 px-2 py-1 text-[9px] font-black text-sky-700">
+            终点
+          </span>
+        </div>
+        <label className="mb-2 block text-xs font-semibold text-slate-700">
+          <input required value={form.arrival_place} onChange={(event) => setForm({ ...form, arrival_place: event.target.value })} placeholder="机场、车站或目的地" className={inputClass} />
+        </label>
+        <LocationPicker compact provider={mapProvider} value={{ lat: form.arrival_lat ?? form.lat, lng: form.arrival_lng ?? form.lng, title: form.arrival_place }} onChange={(location) => setForm((current) => {
+          const arrivalTimezone = inferTimeZoneFromLocation({
+            place: location.title || current.arrival_place,
+            city: location.city,
+            address: location.address,
+            lat: location.lat,
+            lng: location.lng,
+            fallback: current.arrival_timezone || current.departure_timezone || currentDayTimezone,
+          });
+          return {
+            ...current,
+            arrival_place: location.title || current.arrival_place,
+            arrival_lat: location.lat,
+            arrival_lng: location.lng,
+            lat: location.lat,
+            lng: location.lng,
+            timezone: arrivalTimezone,
+            arrival_timezone: arrivalTimezone,
+            coord_system: location.coord_system || current.coord_system || 'wgs84',
+            arrival_place_provider: location.place_provider || current.arrival_place_provider || 'manual',
+            arrival_provider_place_id: location.provider_place_id || current.arrival_provider_place_id || '',
+          };
+        })} />
+      </div>
+    </aside>
+  );
+
+  const pointLocationPanel = (
+    <aside className="space-y-3 rounded-2xl border border-indigo-100 bg-indigo-50/45 p-3 shadow-inner shadow-indigo-100/40">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 text-xs font-black text-indigo-700">
+            <MapPin className="h-4 w-4" />地图定位
+          </div>
+          <div className="mt-1 truncate text-[10px] font-semibold text-slate-500">
+            {form.city || form.address || form.title || '地点位置'}
+          </div>
+        </div>
+        <span className="shrink-0 rounded-full border border-indigo-100 bg-white/80 px-2 py-1 text-[9px] font-black text-indigo-700">
+          {activitySubtypeLabels[activitySubtypeOf(form)]}
+        </span>
+      </div>
+      <LocationPicker provider={mapProvider} value={{ lat: form.lat, lng: form.lng, city: form.city, address: form.address, title: form.title, place_provider: form.place_provider, provider_place_id: form.provider_place_id, coord_system: form.coord_system }} onChange={(location) => setForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, title: current.title || location.title || '', place_provider: location.place_provider || current.place_provider || 'manual', provider_place_id: location.provider_place_id || current.provider_place_id || '', coord_system: location.coord_system || current.coord_system || 'wgs84', timezone: inferTimeZoneFromLocation({ place: location.title || current.title, city: location.city, address: location.address, lat: location.lat, lng: location.lng, fallback: current.timezone || currentDayTimezone }) }))} />
+    </aside>
+  );
+
+  const editorLocationPanel = editingEdge
+    ? null
+    : editorMode === 'lodging'
+      ? lodgingLocationPanel
+      : form.type === 'transport'
+        ? transportLocationPanel
+        : pointLocationPanel;
+
   return (
     <div className="h-full min-h-0">
       {message && <div className="fixed left-1/2 top-20 z-[10000] -translate-x-1/2 rounded-xl bg-slate-900 px-5 py-3 text-xs font-semibold text-white shadow-2xl">{message}</div>}
 
-      <div className="grid h-full min-h-0 w-full grid-cols-1 gap-4 overflow-y-auto xl:overflow-visible xl:grid-cols-[360px_minmax(420px,1fr)_390px] 2xl:grid-cols-[440px_minmax(520px,1fr)_430px]">
+      <div className="grid h-full min-h-0 w-full grid-cols-1 gap-4 overflow-y-auto xl:overflow-visible xl:grid-cols-[360px_minmax(520px,1fr)] 2xl:grid-cols-[440px_minmax(680px,1fr)]">
         <aside
           onDragOver={(event) => {
             if (!canDropToLibrary) return;
@@ -2370,7 +2485,10 @@ export default function AdminView() {
                 <article
                   key={node.id}
                   draggable={!nodeSyncing}
-                  onDragStart={(event) => beginDrag(event, node)}
+                  onDragStart={(event) => {
+                    suppressLibraryClickRef.current = true;
+                    beginDrag(event, node);
+                  }}
                   onDragEnd={() => {
                     setDraggedNodeId(null);
                     draggedSegmentOffsetRef.current = 0;
@@ -2378,8 +2496,14 @@ export default function AdminView() {
                     draggedStartVisibleRef.current = null;
                     draggedOriginPointerRef.current = null;
                     clearDragPreview();
+                    window.setTimeout(() => {
+                      suppressLibraryClickRef.current = false;
+                    }, 80);
                   }}
-                  onClick={() => edit(node)}
+                  onClick={() => {
+                    if (suppressLibraryClickRef.current) return;
+                    edit(node);
+                  }}
                   className={`${nodeSyncing ? 'cursor-wait opacity-80' : 'cursor-grab active:cursor-grabbing'} rounded-xl border p-2.5 shadow-sm transition ${tone.card} hover:border-white hover:bg-white ${activeNodeId === node.id ? 'ring-2 ring-indigo-400/40' : ''} ${draggedNodeId === node.id ? 'opacity-45' : ''}`}
                 >
                   <div className="flex items-stretch gap-3">
@@ -2434,6 +2558,40 @@ export default function AdminView() {
           <div className="mb-3 flex shrink-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <h3 className="text-sm font-black text-slate-900">按天时间表</h3>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => startNew('point', '12:00', false)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-100 bg-white/80 px-3 py-2 text-[11px] font-black text-indigo-700 shadow-sm backdrop-blur transition hover:-translate-y-0.5 hover:border-indigo-200 hover:bg-indigo-50"
+                >
+                  <Plus className="h-3.5 w-3.5" />地点
+                </button>
+                <button
+                  type="button"
+                  onClick={() => startNew('transport', '12:00', true)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-sky-100 bg-white/80 px-3 py-2 text-[11px] font-black text-sky-700 shadow-sm backdrop-blur transition hover:-translate-y-0.5 hover:border-sky-200 hover:bg-sky-50"
+                >
+                  <Plus className="h-3.5 w-3.5" />交通
+                </button>
+                <button
+                  type="button"
+                  onClick={startNewLodging}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-100 bg-white/80 px-3 py-2 text-[11px] font-black text-emerald-700 shadow-sm backdrop-blur transition hover:-translate-y-0.5 hover:border-emerald-200 hover:bg-emerald-50"
+                >
+                  <Plus className="h-3.5 w-3.5" />住宿
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await autoConnectEdges();
+                    toast('已重建地点之间的路线连线');
+                  }}
+                  disabled={saving}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-900 px-3 py-2 text-[11px] font-black text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />重建路线
+                </button>
+              </div>
             </div>
             <div className="flex min-w-0 flex-col gap-2">
               <div className="flex max-w-full gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-100/80 p-1">
@@ -2621,8 +2779,19 @@ export default function AdminView() {
                         <span className="pointer-events-none absolute inset-y-0 left-0 w-1.5" style={{ background: 'var(--transport-rail)' }} />
                         <span className="pointer-events-none absolute -right-8 -top-10 h-24 w-24 rounded-full bg-sky-100/70" />
                         <span className="pointer-events-none absolute bottom-0 right-6 h-10 w-px rotate-12 bg-sky-100" />
+                        <span
+                          title="编辑"
+                          onPointerDown={(pointerEvent) => pointerEvent.stopPropagation()}
+                          onClick={(clickEvent) => {
+                            clickEvent.stopPropagation();
+                            edit(event.node, currentDay);
+                          }}
+                          className="absolute right-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-full border border-white/70 bg-white/75 text-sky-700 shadow-sm backdrop-blur transition hover:bg-white"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </span>
                         {compactTransport ? (
-                          <div className="relative z-10 flex h-full min-w-0 items-center gap-2 pl-2">
+                          <div className="relative z-10 flex h-full min-w-0 items-center gap-2 pl-2 pr-8">
                             <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-sky-600 text-white shadow-sm">
                               <TransportIcon className="h-3.5 w-3.5" />
                             </span>
@@ -2633,7 +2802,7 @@ export default function AdminView() {
                             <LockKeyhole className="h-3.5 w-3.5 shrink-0 text-sky-500" />
                           </div>
                         ) : (
-                          <div className="relative z-10 flex h-full min-w-0 flex-col justify-between pl-2">
+                          <div className="relative z-10 flex h-full min-w-0 flex-col justify-between pl-2 pr-8">
                             <div className="flex items-center justify-between gap-2">
                               <div className="flex min-w-0 items-center gap-1.5">
                                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-sm">
@@ -2700,6 +2869,7 @@ export default function AdminView() {
                           dragEvent.preventDefault();
                           return;
                         }
+                        suppressLibraryClickRef.current = true;
                         beginDrag(dragEvent, event.node, segmentOffsetMinutes, event.start);
                       }}
                       onDragEnd={() => {
@@ -2709,8 +2879,14 @@ export default function AdminView() {
                         draggedStartVisibleRef.current = null;
                         draggedOriginPointerRef.current = null;
                         clearDragPreview();
+                        window.setTimeout(() => {
+                          suppressLibraryClickRef.current = false;
+                        }, 80);
                       }}
-                      onClick={() => edit(event.node, currentDay)}
+                      onClick={() => {
+                        if (suppressLibraryClickRef.current) return;
+                        edit(event.node, currentDay);
+                      }}
                       className={`pointer-events-auto absolute isolate overflow-hidden rounded-xl border px-3 py-2 text-left text-white backdrop-blur-xl backdrop-saturate-150 transition hover:-translate-y-0.5 hover:brightness-105 ${canDragEvent ? 'cursor-grab active:cursor-grabbing' : nodeSyncing ? 'cursor-wait' : 'cursor-pointer'} ${activeNodeId === event.node.id ? 'ring-2 ring-slate-950/20' : ''} ${draggedNodeId === event.node.id ? 'opacity-35' : ''} ${nodeSyncing ? 'brightness-95' : ''}`}
                       style={{
                         top,
@@ -2729,7 +2905,19 @@ export default function AdminView() {
                         </span>
                       )}
                       <span
+                        title="编辑"
+                        onPointerDown={(pointerEvent) => pointerEvent.stopPropagation()}
+                        onClick={(clickEvent) => {
+                          clickEvent.stopPropagation();
+                          edit(event.node, currentDay);
+                        }}
+                        className="absolute right-9 top-2 z-20 flex h-6 w-6 items-center justify-center rounded-full border border-white/20 bg-white/16 text-white/85 shadow-sm backdrop-blur transition hover:bg-white/28 hover:text-white"
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </span>
+                      <span
                         title="取消排期"
+                        onPointerDown={(pointerEvent) => pointerEvent.stopPropagation()}
                         onClick={(clickEvent) => {
                           clickEvent.stopPropagation();
                           void unscheduleNode(event.node.id);
@@ -2739,7 +2927,7 @@ export default function AdminView() {
                         <X className="h-3 w-3" />
                       </span>
                       {compactPointCard ? (
-                        <div className="relative z-10 flex h-full min-w-0 items-center gap-2 pl-2 pr-7">
+                        <div className="relative z-10 flex h-full min-w-0 items-center gap-2 pl-2 pr-14">
                           {showCompactThumb ? (
                             <div className={`${narrowPointCard ? 'h-8 w-9' : 'h-9 w-12'} shrink-0 overflow-hidden rounded-lg border border-white/25 bg-white/16 shadow-inner backdrop-blur`}>
                               <img src={coverUrl} alt="" className="h-full w-full object-cover" />
@@ -2782,7 +2970,7 @@ export default function AdminView() {
                         <>
                           <div className="relative z-10 flex items-center justify-between gap-2 pl-2 text-[9px] font-black text-white/90">
                             <span className="truncate tabular-nums tracking-wide">{pointTimeText}</span>
-                            <span className="mr-7 shrink-0 rounded-full bg-white/18 px-1.5 py-0.5 text-white/90 backdrop-blur">{itineraryTypeLabel(event.node)}</span>
+                            <span className="mr-14 shrink-0 rounded-full bg-white/18 px-1.5 py-0.5 text-white/90 backdrop-blur">{itineraryTypeLabel(event.node)}</span>
                           </div>
                           <div className={`relative z-10 min-w-0 pl-2 ${showScheduleThumb ? 'mt-1.5 flex items-start gap-2' : 'mt-0.5'}`}>
                             {showScheduleThumb && (
@@ -2892,37 +3080,23 @@ export default function AdminView() {
           </div>
         </section>
 
-        <form onSubmit={editorMode === 'lodging' ? submitLodgingStay : submit} className="min-h-0 min-w-0 space-y-3 rounded-2xl border border-white/60 bg-white/55 p-3 shadow-lg backdrop-blur-xl xl:h-full xl:overflow-y-auto">
-          <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-100">
-            <button
-              type="button"
-              onClick={async () => {
-                await autoConnectEdges();
-                toast('已重建地点之间的路线连线');
-              }}
-              disabled={saving}
-              className="absolute right-2 top-2 z-[500] flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/85 px-2.5 py-1.5 text-[10px] font-black text-indigo-700 shadow-lg backdrop-blur transition hover:bg-white disabled:opacity-50"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />路线
-            </button>
-            <div className="h-56">
-              <MapView />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
+        {editorOpen && createPortal((
+        <div className="fixed inset-0 z-[30000] flex items-center justify-center bg-slate-950/35 px-3 py-16 backdrop-blur-md sm:px-5 sm:py-24">
+          <button type="button" aria-label="关闭编辑弹窗" onClick={() => reset()} className="absolute inset-0 cursor-default" />
+          <form onSubmit={editorMode === 'lodging' ? submitLodgingStay : submit} className="relative z-10 max-h-[calc(100vh-8rem)] w-full max-w-[780px] min-w-0 space-y-3 overflow-y-auto rounded-[24px] border border-white/70 bg-white/82 p-4 shadow-[0_28px_90px_rgba(15,23,42,0.30)] backdrop-blur-2xl backdrop-saturate-150 sm:max-h-[calc(100vh-12rem)] sm:p-5 lg:max-w-[1120px]">
+          <button
+            type="button"
+            onClick={() => reset()}
+            aria-label="关闭"
+            className="absolute right-4 top-4 z-20 flex h-9 w-9 items-center justify-center rounded-full border border-white/70 bg-white/80 text-slate-500 shadow-sm backdrop-blur transition hover:bg-white hover:text-slate-900"
+          >
+            <X className="h-4 w-4" />
+          </button>
+          <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3 pr-10">
             <div>
-              <h3 className="text-sm font-black text-slate-900">{editingEdge ? '路段设置' : editorMode === 'lodging' ? (editingStayId ? '编辑住宿' : '住宿录入') : editingId ? '编辑项目' : '项目录入'}</h3>
+              <h3 className="text-sm font-black text-slate-900">{editorTitle}</h3>
               <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
-                {editingEdge
-                  ? `${editingEdgeSource?.title || '起点'} → ${editingEdgeTarget?.title || '终点'}`
-                  : editorMode === 'lodging'
-                  ? `${editingStayId ? '入住区间' : '新增入住'} · ${stayCheckInDate} ${stayForm.check_in_time || '15:00'} → ${stayCheckOutDate} ${stayForm.check_out_time || '11:00'}`
-                  : form.type === 'transport'
-                  ? `交通 · ${form.date || currentDate} · ${form.time || '12:00'}`
-                  : isScheduledNode({ id: editingId || 'draft', ...form })
-                    ? `地点 · 已排期 ${form.date} · ${form.time}`
-                    : '地点 · 待排期'}
+                {editorSubtitle}
               </p>
             </div>
             <div className="flex items-center gap-1">
@@ -2931,7 +3105,7 @@ export default function AdminView() {
                   <button type="button" onClick={followAutoRoute} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[10px] font-black text-slate-600 shadow-sm transition hover:border-indigo-200 hover:text-indigo-700">
                     自动
                   </button>
-                  <button type="button" onClick={() => setActiveEdgeId(null)} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-red-600 hover:bg-red-50">取消</button>
+                  <button type="button" onClick={() => reset()} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-red-600 hover:bg-red-50">取消</button>
                 </>
               ) : (
                 <>
@@ -2940,7 +3114,7 @@ export default function AdminView() {
                       <Trash2 className="mr-1 inline h-3 w-3" />删除
                     </button>
                   )}
-                  {(editingId || editorMode === 'lodging') && <button type="button" onClick={() => reset()} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-red-600 hover:bg-red-50">取消</button>}
+                  <button type="button" onClick={() => reset()} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-red-600 hover:bg-red-50">取消</button>
                 </>
               )}
             </div>
@@ -3014,19 +3188,8 @@ export default function AdminView() {
               </div>
             </div>
           ) : (
-          <>
-          <div className="grid grid-cols-3 gap-2 rounded-xl bg-slate-100 p-1">
-            <button type="button" disabled={editingExistingTransport} onClick={() => switchEditorMode('point')} className={`rounded-lg py-2 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50 ${editorMode === 'item' && form.type !== 'transport' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60'}`}>
-              <MapPin className="mr-1 inline h-3.5 w-3.5" />地点项目
-            </button>
-            <button type="button" disabled={editingExistingTransport} onClick={() => switchEditorMode('transport')} className={`rounded-lg py-2 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50 ${editorMode === 'item' && form.type === 'transport' ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-500 hover:bg-white/60'}`}>
-              <Route className="mr-1 inline h-3.5 w-3.5" />交通
-            </button>
-            <button type="button" disabled={editingExistingTransport} onClick={startNewLodging} className={`rounded-lg py-2 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-50 ${editorMode === 'lodging' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:bg-white/60'}`}>
-              <BedDouble className="mr-1 inline h-3.5 w-3.5" />住宿
-            </button>
-          </div>
-
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_410px] lg:items-start">
+          <div className="min-w-0 space-y-3">
           {editorMode === 'lodging' ? (
             <div className="space-y-3">
               <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-3">
@@ -3111,8 +3274,6 @@ export default function AdminView() {
                   ))}
                 </select>
               </label>
-
-              <LocationPicker provider={mapProvider} value={{ lat: lodgingForm.lat, lng: lodgingForm.lng, city: lodgingForm.city, address: lodgingForm.address, title: lodgingForm.name, place_provider: lodgingForm.place_provider, provider_place_id: lodgingForm.provider_place_id, coord_system: lodgingForm.coord_system }} onChange={(location) => setLodgingForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, name: current.name || location.title || '', place_provider: location.place_provider || current.place_provider || 'manual', provider_place_id: location.provider_place_id || current.provider_place_id || '', coord_system: location.coord_system || current.coord_system || 'wgs84', timezone: inferTimeZoneFromLocation({ place: location.title || current.name, city: location.city, address: location.address, lat: location.lat, lng: location.lng, fallback: current.timezone || currentDayTimezone }) }))} />
 
               <div tabIndex={0} onPaste={(event) => pasteImage(event, 'lodging')} className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50/40 p-3 outline-none focus:border-emerald-400">
                 <div className="flex items-center justify-between gap-2">
@@ -3313,61 +3474,6 @@ export default function AdminView() {
                 <input value={form.duration} onChange={(event) => setForm({ ...form, duration: event.target.value })} placeholder="例如：3小时20分" className={inputClass} />
               </label>
 
-              <div className="space-y-3">
-                <div className="rounded-2xl border border-white/70 bg-white/55 p-2.5">
-                  <label className="mb-2 block text-xs font-semibold text-slate-700">
-                    出发地
-                    <input required value={form.departure_place} onChange={(event) => setForm({ ...form, departure_place: event.target.value })} className={inputClass} />
-                  </label>
-                  <LocationPicker compact provider={mapProvider} value={{ lat: form.departure_lat ?? form.lat, lng: form.departure_lng ?? form.lng, title: form.departure_place }} onChange={(location) => setForm((current) => ({
-                    ...current,
-                    departure_place: location.title || current.departure_place,
-                    departure_lat: location.lat,
-                    departure_lng: location.lng,
-                    coord_system: location.coord_system || current.coord_system || 'wgs84',
-                    departure_place_provider: location.place_provider || current.departure_place_provider || 'manual',
-                    departure_provider_place_id: location.provider_place_id || current.departure_provider_place_id || '',
-                    departure_timezone: inferTimeZoneFromLocation({
-                      place: location.title || current.departure_place,
-                      city: location.city,
-                      address: location.address,
-                      lat: location.lat,
-                      lng: location.lng,
-                      fallback: current.departure_timezone || currentDayTimezone,
-                    }),
-                  }))} />
-                </div>
-
-                <div className="rounded-2xl border border-white/70 bg-white/55 p-2.5">
-                  <label className="mb-2 block text-xs font-semibold text-slate-700">
-                    到达地
-                    <input required value={form.arrival_place} onChange={(event) => setForm({ ...form, arrival_place: event.target.value })} className={inputClass} />
-                  </label>
-                  <LocationPicker compact provider={mapProvider} value={{ lat: form.arrival_lat ?? form.lat, lng: form.arrival_lng ?? form.lng, title: form.arrival_place }} onChange={(location) => setForm((current) => {
-                    const arrivalTimezone = inferTimeZoneFromLocation({
-                      place: location.title || current.arrival_place,
-                      city: location.city,
-                      address: location.address,
-                      lat: location.lat,
-                      lng: location.lng,
-                      fallback: current.arrival_timezone || current.departure_timezone || currentDayTimezone,
-                    });
-                    return {
-                      ...current,
-                      arrival_place: location.title || current.arrival_place,
-                      arrival_lat: location.lat,
-                      arrival_lng: location.lng,
-                      lat: location.lat,
-                      lng: location.lng,
-                      timezone: arrivalTimezone,
-                      arrival_timezone: arrivalTimezone,
-                      coord_system: location.coord_system || current.coord_system || 'wgs84',
-                      arrival_place_provider: location.place_provider || current.arrival_place_provider || 'manual',
-                      arrival_provider_place_id: location.provider_place_id || current.arrival_provider_place_id || '',
-                    };
-                  })} />
-                </div>
-              </div>
               </div>
             </div>
           ) : (
@@ -3461,8 +3567,6 @@ export default function AdminView() {
                 </select>
               </label>
 
-              <LocationPicker provider={mapProvider} value={{ lat: form.lat, lng: form.lng, city: form.city, address: form.address, title: form.title, place_provider: form.place_provider, provider_place_id: form.provider_place_id, coord_system: form.coord_system }} onChange={(location) => setForm((current) => ({ ...current, lat: location.lat, lng: location.lng, city: location.city ?? current.city, address: location.address ?? current.address, title: current.title || location.title || '', place_provider: location.place_provider || current.place_provider || 'manual', provider_place_id: location.provider_place_id || current.provider_place_id || '', coord_system: location.coord_system || current.coord_system || 'wgs84', timezone: inferTimeZoneFromLocation({ place: location.title || current.title, city: location.city, address: location.address, lat: location.lat, lng: location.lng, fallback: current.timezone || currentDayTimezone }) }))} />
-
               <div tabIndex={0} onPaste={pasteImage} className="rounded-2xl border border-dashed border-indigo-200 bg-indigo-50/40 p-3 outline-none focus:border-indigo-400">
                 <div className="grid grid-cols-3 gap-2">
                   {(form.image_urls || []).map((url, index) => (
@@ -3500,14 +3604,22 @@ export default function AdminView() {
           </label>
           </>
           )}
-          </>
+          </div>
+          {editorLocationPanel && (
+            <div className="min-w-0 lg:sticky lg:top-0 lg:max-h-[calc(100vh-15rem)] lg:overflow-y-auto lg:pr-1">
+              {editorLocationPanel}
+            </div>
+          )}
+          </div>
           )}
 
           <button disabled={formSubmitSaving || editingExistingTransport} className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 py-3 text-xs font-semibold text-white disabled:opacity-50">
             {formSubmitSaving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {editingEdge ? '保存路段设置' : editorMode === 'lodging' ? (editingStayId ? '保存住宿区间' : '安排住宿') : editingExistingTransport ? '删除后重新录入' : editingId ? '保存修改' : '新增内容'}
           </button>
-        </form>
+          </form>
+        </div>
+        ), document.body)}
       </div>
     </div>
   );
