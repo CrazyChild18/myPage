@@ -705,20 +705,20 @@ const RouteOverlapLegend: React.FC<RouteOverlapLegendProps> = ({
   if (!groups.length) return null;
 
   return (
-    <div className="pointer-events-auto absolute bottom-4 left-4 z-[10000] w-[min(21rem,calc(100%-2rem))] overflow-hidden rounded-2xl border border-white/70 bg-white/86 shadow-[0_18px_46px_rgba(15,23,42,0.24)] backdrop-blur-xl">
-      <div className="flex items-center justify-between border-b border-slate-200/70 px-3.5 py-2.5">
+    <div className="pointer-events-auto absolute bottom-3 left-1/2 z-[10000] w-[min(20rem,calc(100%-2rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-white/55 bg-white/45 shadow-[0_18px_46px_rgba(15,23,42,0.22)] backdrop-blur-2xl backdrop-saturate-150 md:bottom-5 md:left-auto md:right-5 md:translate-x-0">
+      <div className="flex items-center justify-between border-b border-white/45 px-3.5 py-2.5">
         <div>
           <div className="text-[11px] font-black text-slate-950">重叠路线</div>
           <div className="mt-0.5 text-[9px] font-bold text-slate-500">悬浮高亮，点击锁定</div>
         </div>
-        <div className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[9px] font-black text-slate-500">
+        <div className="rounded-full border border-white/60 bg-white/45 px-2 py-1 text-[9px] font-black text-slate-600 shadow-sm backdrop-blur-md">
           {groups.reduce((sum, group) => sum + group.members.length, 0)} 条
         </div>
       </div>
-      <div className="max-h-56 space-y-2 overflow-y-auto p-2.5">
+      <div className="max-h-48 space-y-2 overflow-y-auto p-2.5">
         {groups.map((group) => (
-          <div key={group.id} className="rounded-xl border border-slate-200/80 bg-slate-50/78 p-1.5">
-            <div className="px-1.5 pb-1 text-[9px] font-black text-slate-400">同路段</div>
+          <div key={group.id} className="rounded-xl border border-white/45 bg-white/34 p-1.5 shadow-sm backdrop-blur-lg">
+            <div className="px-1.5 pb-1 text-[9px] font-black text-slate-500">同路段</div>
             {group.members.map((member) => {
               const active = activeEdgeId === member.stateId || hoveredEdgeId === member.stateId;
               return (
@@ -731,7 +731,7 @@ const RouteOverlapLegend: React.FC<RouteOverlapLegendProps> = ({
                   onBlur={() => setHoveredEdgeId(null)}
                   onClick={() => setActiveEdgeId(member.stateId)}
                   className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition ${
-                    active ? 'bg-white shadow-sm ring-1 ring-indigo-200' : 'hover:bg-white/86'
+                    active ? 'bg-white/82 shadow-sm ring-1 ring-indigo-200/80' : 'hover:bg-white/56'
                   }`}
                 >
                   <span
@@ -743,7 +743,7 @@ const RouteOverlapLegend: React.FC<RouteOverlapLegendProps> = ({
                     <span className="mt-0.5 block truncate text-[9px] font-bold text-slate-500">{member.label.subtitle}</span>
                   </span>
                   {member.label.metric && (
-                    <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[9px] font-black text-rose-600 shadow-sm">
+                    <span className="shrink-0 rounded-full bg-white/72 px-2 py-1 text-[9px] font-black text-rose-600 shadow-sm backdrop-blur-md">
                       {member.label.metric}
                     </span>
                   )}
