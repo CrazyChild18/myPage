@@ -140,13 +140,13 @@ const createCustomMarkerIcon = (node: ItineraryNode, isSelected: boolean) => {
   });
 };
 
-const createLodgingMarkerIcon = () => {
-  const size = 36;
+const createLodgingMarkerIcon = (selected = false) => {
+  const size = selected ? 42 : 36;
   return L.divIcon({
     className: 'lodging-leaflet-marker-wrapper',
     html: `
       <div class="relative flex items-center justify-center rounded-full box-border border-2 border-white/95 shadow-[0_10px_24px_rgba(16,185,129,0.35)] transition-all duration-300 pointer-events-auto"
-           style="background:#10b981;width:${size}px;height:${size}px;">
+           style="background:#10b981;width:${size}px;height:${size}px;box-shadow:${selected ? '0 0 0 5px rgba(16,185,129,.22),0 18px 36px rgba(16,185,129,.42)' : '0 10px 24px rgba(16,185,129,.35)'};">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:17px;height:17px">
           <path d="M3 10V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5" />
           <path d="M21 21v-4a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v4" />
@@ -1094,6 +1094,50 @@ const lodgingInfoHtml = (lodging: Lodging, stays: Stay[]) => {
   `;
 };
 
+type LodgingMarkerProps = {
+  lodging: Lodging;
+  stays: Stay[];
+  selected: boolean;
+  onSelect: () => void;
+};
+
+const LodgingMarker: React.FC<LodgingMarkerProps> = ({ lodging, stays, selected, onSelect }) => {
+  const markerRef = useRef<L.Marker>(null);
+
+  useEffect(() => {
+    if (selected) markerRef.current?.openPopup();
+  }, [selected]);
+
+  return (
+    <Marker
+      ref={markerRef}
+      position={[lodging.lat, lodging.lng]}
+      icon={createLodgingMarkerIcon(selected)}
+      zIndexOffset={selected ? ROUTE_HOVER_Z_INDEX + 30 : 0}
+      eventHandlers={{ click: onSelect }}
+    >
+      <Tooltip direction="top" offset={[0, -32]} opacity={0.96}>
+        <div className="min-w-32 py-0.5">
+          <div className="text-xs font-black text-slate-900">{lodging.name}</div>
+          <div className="mt-1 text-[10px] font-semibold text-emerald-700">{lodgingStayText(stays)}</div>
+        </div>
+      </Tooltip>
+      <Popup minWidth={230}>
+        <div className="space-y-2">
+          {lodgingImagesOf(lodging)[0] && (
+            <img src={lodgingImagesOf(lodging)[0]} alt="" className="h-24 w-full rounded-xl object-cover" />
+          )}
+          <div>
+            <div className="text-sm font-black text-slate-900">{lodging.name}</div>
+            <div className="mt-1 text-[11px] font-bold text-slate-500">{lodging.address || lodging.city || '地址待补充'}</div>
+            <div className="mt-1 text-[10px] font-black text-emerald-700">{lodgingStayText(stays)}</div>
+          </div>
+        </div>
+      </Popup>
+    </Marker>
+  );
+};
+
 const transportInfoHtml = (route: ItineraryNode) => `
   <div style="min-width:190px;font-family:Inter,system-ui,sans-serif">
     <div style="font-size:12px;font-weight:900;color:#0369a1">${route.service_number || '区间交通'}</div>
@@ -1466,20 +1510,28 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
 
           visibleLodgings.forEach(({ lodging, stays }) => {
             remember(lodging.lat, lodging.lng);
+            const selected = activeNodeId === lodging.id;
             const marker = new maps.Marker({
               map: mapRef.current,
               position: { lat: lodging.lat, lng: lodging.lng },
               title: lodging.name,
               icon: {
-                url: providerMarkerSvgUrl('#10b981', 'hotel'),
-                scaledSize: new maps.Size(42, 48),
-                anchor: new maps.Point(21, 46),
+                url: providerMarkerSvgUrl('#10b981', 'hotel', selected),
+                scaledSize: new maps.Size(selected ? 48 : 42, selected ? 54 : 48),
+                anchor: new maps.Point(selected ? 24 : 21, selected ? 51 : 46),
               },
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX + 30 : undefined,
             });
-            marker.addListener('click', () => {
+            const openLodgingInfo = () => {
               infoRef.current.setContent(lodgingInfoHtml(lodging, stays));
               infoRef.current.open(mapRef.current, marker);
+            };
+            marker.addListener('click', () => {
+              clearRouteHover();
+              setActiveNodeId(lodging.id);
+              openLodgingInfo();
             });
+            if (selected) openLodgingInfo();
             overlaysRef.current.push(marker);
           });
 
@@ -1896,18 +1948,25 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
 
           visibleLodgings.forEach(({ lodging, stays }) => {
             const position = remember(lodging.lat, lodging.lng);
+            const selected = activeNodeId === lodging.id;
             const marker = new AMap.Marker({
               map: mapRef.current,
               position,
               title: lodging.name,
-              content: `<img src="${providerMarkerSvgUrl('#10b981', 'hotel')}" style="width:42px;height:48px;display:block" />`,
-              offset: new AMap.Pixel(-21, -46),
+              content: `<img src="${providerMarkerSvgUrl('#10b981', 'hotel', selected)}" style="width:${selected ? 48 : 42}px;height:${selected ? 54 : 48}px;display:block" />`,
+              offset: new AMap.Pixel(selected ? -24 : -21, selected ? -51 : -46),
+              zIndex: selected ? ROUTE_HOVER_Z_INDEX + 30 : undefined,
             });
-            marker.on('click', () => {
-              clearRouteHover();
+            const openLodgingInfo = () => {
               infoRef.current.setContent(lodgingInfoHtml(lodging, stays));
               infoRef.current.open(mapRef.current, position);
+            };
+            marker.on('click', () => {
+              clearRouteHover();
+              setActiveNodeId(lodging.id);
+              openLodgingInfo();
             });
+            if (selected) openLodgingInfo();
             overlaysRef.current.push(marker);
           });
 
@@ -2346,30 +2405,13 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
         ))}
 
         {mode === 'trip' && visibleLodgings.map(({ lodging, stays }) => (
-          <Marker
+          <LodgingMarker
             key={`lodging-${lodging.id}`}
-            position={[lodging.lat, lodging.lng]}
-            icon={createLodgingMarkerIcon()}
-          >
-            <Tooltip direction="top" offset={[0, -32]} opacity={0.96}>
-              <div className="min-w-32 py-0.5">
-                <div className="text-xs font-black text-slate-900">{lodging.name}</div>
-                <div className="mt-1 text-[10px] font-semibold text-emerald-700">{lodgingStayText(stays)}</div>
-              </div>
-            </Tooltip>
-            <Popup minWidth={230}>
-              <div className="space-y-2">
-                {lodgingImagesOf(lodging)[0] && (
-                  <img src={lodgingImagesOf(lodging)[0]} alt="" className="h-24 w-full rounded-xl object-cover" />
-                )}
-                <div>
-                  <div className="text-sm font-black text-slate-900">{lodging.name}</div>
-                  <div className="mt-1 text-[11px] font-bold text-slate-500">{lodging.address || lodging.city || '地址待补充'}</div>
-                  <div className="mt-1 text-[10px] font-black text-emerald-700">{lodgingStayText(stays)}</div>
-                </div>
-              </div>
-            </Popup>
-          </Marker>
+            lodging={lodging}
+            stays={stays}
+            selected={activeNodeId === lodging.id}
+            onSelect={() => setActiveNodeId(lodging.id)}
+          />
         ))}
       </MapContainer>
       </ProviderMissingFallback>
