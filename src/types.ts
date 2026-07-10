@@ -85,8 +85,9 @@ export interface RouteSegment {
   origin_lng: number;
   destination_lat: number;
   destination_lng: number;
-  geometryFormat: 'latlng_json' | 'great_circle';
-  geometry: [number, number][];
+  geometryFormat: 'latlng_json' | 'great_circle' | 'encoded_polyline';
+  geometry?: [number, number][];
+  geometryEncoded?: string;
   coordSystem: CoordinateSystem;
   distanceMeters?: number | null;
   durationSeconds?: number | null;

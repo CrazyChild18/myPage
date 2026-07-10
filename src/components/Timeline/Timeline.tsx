@@ -16,6 +16,7 @@ import TransportTicket from '../TransportTicket/TransportTicket';
 import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryEdge, ItineraryNode, Lodging, RouteSegment, Stay, TransportMode } from '../../types';
 import { activitySubtypeOf, compareItineraryNodes, isScheduledNode, itineraryTypeLabel, itineraryTypeTone } from '../../utils/itinerary';
+import { responsiveImageProps } from '../../utils/images';
 
 const START_MINUTES = 0;
 const END_MINUTES = 24 * 60;
@@ -480,6 +481,7 @@ function MobileEventCard({
   onPreview,
   onSelect,
 }: {
+  key?: React.Key;
   node: ItineraryNode;
   selected: boolean;
   setCardRef: (id: string, element: HTMLDivElement | null) => void;
@@ -534,7 +536,7 @@ function MobileEventCard({
         >
           {images[0] ? (
             <>
-              <img src={images[0]} alt={node.title} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+              <img src={images[0]} {...responsiveImageProps(images[0], '160px')} alt={node.title} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
               <span className="absolute bottom-1.5 right-1.5 flex items-center gap-1 rounded-full bg-slate-950/70 px-1.5 py-0.5 text-[8px] font-bold text-white opacity-0 backdrop-blur transition group-hover:opacity-100">
                 <ImageIcon className="h-2.5 w-2.5" />
                 {images.length}
@@ -572,6 +574,7 @@ function MobileRouteCard({
   onSelect,
   onHover,
 }: {
+  key?: React.Key;
   entry: Extract<ScheduleEntry, { kind: 'route' }>;
   active: boolean;
   onSelect: () => void;
@@ -589,7 +592,7 @@ function MobileRouteCard({
       onMouseLeave={() => onHover(false)}
       onFocus={() => onHover(true)}
       onBlur={() => onHover(false)}
-      className={`flex w-[68vw] shrink-0 snap-center items-center gap-2 rounded-2xl border px-3 py-2 text-left transition ${
+      className={`flex w-36 shrink-0 snap-center items-center gap-2 rounded-2xl border px-3 py-2 text-left transition ${
         active ? `bg-white/90 shadow-md ring-1 ring-indigo-200 ${tone.border}` : `bg-white/46 hover:bg-white/68 ${tone.border}`
       }`}
     >
@@ -610,6 +613,7 @@ function MobileLodgingCard({
   setCardRef,
   onSelect,
 }: {
+  key?: React.Key;
   stay: Stay;
   lodging: Lodging;
   selected: boolean;
@@ -621,7 +625,7 @@ function MobileLodgingCard({
       ref={(element) => setCardRef(lodging.id, element)}
       type="button"
       onClick={onSelect}
-      className={`w-[70vw] shrink-0 snap-center rounded-2xl border p-3 text-left shadow-sm transition ${
+      className={`w-56 shrink-0 snap-center rounded-2xl border p-3 text-left shadow-sm transition ${
         selected
           ? 'border-emerald-300 bg-emerald-50/92 ring-2 ring-emerald-400/20'
           : 'border-emerald-100 bg-emerald-50/78 hover:border-emerald-200'
@@ -673,7 +677,7 @@ function LodgingBand({
             }`}
           >
             <span className="relative flex h-11 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-emerald-100 text-emerald-700">
-              {cover ? <img src={cover} alt="" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" /> : <Bed className="h-5 w-5" />}
+              {cover ? <img src={cover} {...responsiveImageProps(cover, '160px')} alt="" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" /> : <Bed className="h-5 w-5" />}
               <span className="absolute inset-x-0 bottom-0 bg-slate-950/55 px-1 py-0.5 text-center text-[8px] font-black text-white">N{nightIndex}</span>
             </span>
             <span className="min-w-0 flex-1">
@@ -698,6 +702,7 @@ function DayEventBlock({
   onPreview,
   onSelect,
 }: {
+  key?: React.Key;
   event: ScheduleEvent;
   selected: boolean;
   setCardRef: (id: string, element: HTMLDivElement | null) => void;
@@ -750,7 +755,7 @@ function DayEventBlock({
             }}
             className={`${compact ? 'h-8 w-10' : 'h-11 w-14'} shrink-0 overflow-hidden rounded-lg border border-white/25 bg-white/16 shadow-inner backdrop-blur`}
           >
-            <img src={cover} alt="" className="h-full w-full object-cover" />
+            <img src={cover} {...responsiveImageProps(cover, '160px')} alt="" className="h-full w-full object-cover" />
           </span>
         ) : (
           <span className={`${compact ? 'h-7 w-7' : 'h-9 w-9'} flex shrink-0 items-center justify-center rounded-lg bg-white/16 text-current backdrop-blur`}>
@@ -789,6 +794,7 @@ function DayRouteChip({
   onSelect,
   onHover,
 }: {
+  key?: React.Key;
   link: DayRouteLink;
   active: boolean;
   onSelect: () => void;
@@ -850,10 +856,22 @@ function ReadOnlyDaySchedule({
   setHoveredEdgeId: (id: string | null) => void;
   onPreview: (preview: { node: ItineraryNode; index: number }) => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!scrollRef.current) return;
+    const earliest = events.reduce((minimum, event) => Math.min(minimum, event.start), END_MINUTES);
+    const targetMinutes = Math.max(START_MINUTES, (earliest === END_MINUTES ? 8 * 60 : earliest) - 60);
+    scrollRef.current.scrollTo({
+      top: (targetMinutes / SLOT_MINUTES) * SLOT_HEIGHT,
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    });
+  }, [day, events.length]);
+
   return (
     <div className="hidden min-h-0 flex-1 flex-col sm:flex">
       <LodgingBand stays={stays} activeNodeId={activeNodeId} setActiveNodeId={setActiveNodeId} setCardRef={setCardRef} />
-      <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-white/55 bg-white/72 shadow-inner">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-white/55 bg-white/72 shadow-inner">
         <div className="sticky top-0 z-50 flex items-center justify-between border-b border-slate-100 bg-white/82 px-3 py-2 backdrop-blur-xl">
           <span className="text-[10px] font-black text-slate-900">D{day} · {formatShortDate(date)}</span>
           <span className="text-[9px] font-bold text-slate-400">00:00 - 23:59</span>

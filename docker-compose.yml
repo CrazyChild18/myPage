@@ -6,6 +6,7 @@ services:
         VITE_AMAP_JS_API_KEY: ${VITE_AMAP_JS_API_KEY:-}
         VITE_AMAP_SECURITY_CODE: ${VITE_AMAP_SECURITY_CODE:-}
         VITE_GOOGLE_MAPS_BROWSER_KEY: ${VITE_GOOGLE_MAPS_BROWSER_KEY:-}
+        VITE_GOOGLE_MAP_ID: ${VITE_GOOGLE_MAP_ID:-}
     container_name: voyageplanner
     restart: unless-stopped
     ports:

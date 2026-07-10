@@ -76,6 +76,8 @@ const applyTrip = (data: TripResponse) => ({
   error: null,
 });
 
+let loadSequence = 0;
+
 export const useItineraryStore = create<ItineraryState>((set, get) => ({
   selectedTripSlug: null,
   trip: null,
@@ -94,30 +96,45 @@ export const useItineraryStore = create<ItineraryState>((set, get) => ({
   error: null,
 
   loadTrip: async (slug) => {
+    const sequence = ++loadSequence;
     set({ loading: true, error: null });
     try {
-      set(applyTrip(await request<TripResponse>(`/api/trips/${slug}`)));
+      const data = await request<TripResponse>(`/api/trips/${slug}?include_routes=0`);
+      if (sequence !== loadSequence) return;
+      set(applyTrip(data));
+      try {
+        const routeSegments = await request<RouteSegment[]>(`/api/trips/${slug}/route-segments`);
+        if (sequence !== loadSequence || get().selectedTripSlug !== slug) return;
+        set({ routeSegments });
+      } catch (routeError) {
+        if (sequence !== loadSequence || get().selectedTripSlug !== slug) return;
+        set({ error: routeError instanceof Error ? `路线加载失败：${routeError.message}` : '路线加载失败' });
+      }
     } catch (error) {
+      if (sequence !== loadSequence) return;
       set({ loading: false, error: error instanceof Error ? error.message : '加载行程失败' });
     }
   },
 
-  clearTrip: () => set({
-    selectedTripSlug: null,
-    trip: null,
-    nodes: [],
-    edges: [],
-    routeSegments: [],
-    lodgings: [],
-    stays: [],
-    activeNodeId: null,
-    activeEdgeId: null,
-    activeDay: 'all',
-    loading: false,
-    saving: false,
-    syncingNodeIds: [],
-    error: null,
-  }),
+  clearTrip: () => {
+    loadSequence += 1;
+    set({
+      selectedTripSlug: null,
+      trip: null,
+      nodes: [],
+      edges: [],
+      routeSegments: [],
+      lodgings: [],
+      stays: [],
+      activeNodeId: null,
+      activeEdgeId: null,
+      activeDay: 'all',
+      loading: false,
+      saving: false,
+      syncingNodeIds: [],
+      error: null,
+    });
+  },
 
   resetTrip: async () => {
     const slug = get().selectedTripSlug;

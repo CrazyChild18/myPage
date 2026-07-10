@@ -92,9 +92,48 @@
   border-top-color: #818cf8;
 }
 
+.visa-table th,
+.visa-table td {
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.admin-schedule-grid {
+  --schedule-time-axis: 58px;
+  --schedule-lodging-axis: 104px;
+}
+
+@media screen and (max-width: 640px) {
+  .admin-schedule-grid {
+    --schedule-time-axis: 44px;
+    --schedule-lodging-axis: 72px;
+  }
+
+  .visa-table {
+    font-size: 9px;
+  }
+
+  .visa-table th,
+  .visa-table td {
+    padding: 5px 4px;
+    line-height: 1.35;
+  }
+}
+
 @page {
   size: A4 portrait;
   margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 @media print {

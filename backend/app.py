@@ -12,6 +12,8 @@ from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
+from flask_compress import Compress
+from PIL import Image, ImageOps
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
@@ -69,6 +71,27 @@ AIRPORT_COORDINATES = {
 
 app = Flask(__name__, static_folder=str(DIST_DIR), static_url_path="")
 app.config["MAX_CONTENT_LENGTH"] = MAX_IMAGE_BYTES
+app.config["COMPRESS_MIMETYPES"] = [
+    "application/json",
+    "application/javascript",
+    "text/css",
+    "text/html",
+    "text/javascript",
+    "text/plain",
+    "image/svg+xml",
+]
+app.config["COMPRESS_MIN_SIZE"] = 500
+Compress(app)
+
+
+@app.after_request
+def set_delivery_headers(response):
+    path = request.path
+    if path.startswith("/assets/") or path.startswith("/uploads/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path == "/" or path.endswith("/index.html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.errorhandler(RequestEntityTooLarge)
@@ -608,17 +631,46 @@ def row_to_edge(row):
     return item
 
 
+def encode_polyline(points, precision=5):
+    factor = 10 ** precision
+    encoded = []
+    previous_lat = 0
+    previous_lng = 0
+
+    def append_value(value):
+        shifted = value << 1
+        if value < 0:
+            shifted = ~shifted
+        while shifted >= 0x20:
+            encoded.append(chr((0x20 | (shifted & 0x1F)) + 63))
+            shifted >>= 5
+        encoded.append(chr(shifted + 63))
+
+    for point in points:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        lat = int(round(float(point[0]) * factor))
+        lng = int(round(float(point[1]) * factor))
+        append_value(lat - previous_lat)
+        append_value(lng - previous_lng)
+        previous_lat = lat
+        previous_lng = lng
+    return "".join(encoded)
+
+
 def row_to_route_segment(row):
     item = dict(row)
     try:
         geometry = json.loads(item.pop("geometry_json") or "[]")
     except json.JSONDecodeError:
         geometry = []
-    item["geometry"] = geometry if isinstance(geometry, list) else []
+    geometry = geometry if isinstance(geometry, list) else []
+    item["geometryEncoded"] = encode_polyline(geometry)
     item["linkType"] = item.pop("link_type")
     item["linkId"] = item.pop("link_id")
     item["travelMode"] = item.pop("travel_mode")
-    item["geometryFormat"] = item.pop("geometry_format")
+    item.pop("geometry_format")
+    item["geometryFormat"] = "encoded_polyline"
     item["coordSystem"] = item.pop("coord_system")
     item["distanceMeters"] = item.pop("distance_meters")
     item["durationSeconds"] = item.pop("duration_seconds")
@@ -630,7 +682,21 @@ def row_to_route_segment(row):
     return item
 
 
-def serialize_trip(db, slug):
+def route_segments_for_trip(db, slug):
+    return [
+        row_to_route_segment(row)
+        for row in db.execute(
+            """SELECT id, link_type, link_id, provider, travel_mode, origin_lat, origin_lng,
+            destination_lat, destination_lng, geometry_format, geometry_json, coord_system,
+            distance_meters, duration_seconds, distance_text, duration_text, status,
+            expires_at, error_message, requested_at
+            FROM route_segments WHERE trip_slug = ? ORDER BY link_type, link_id""",
+            (slug,),
+        )
+    ]
+
+
+def serialize_trip(db, slug, include_route_segments=True):
     trip = db.execute("SELECT * FROM trips WHERE slug = ?", (slug,)).fetchone()
     if not trip:
         return None
@@ -660,17 +726,7 @@ def serialize_trip(db, slug):
             (slug,),
         )
     ]
-    result["routeSegments"] = [
-        row_to_route_segment(row)
-        for row in db.execute(
-            """SELECT id, link_type, link_id, provider, travel_mode, origin_lat, origin_lng,
-            destination_lat, destination_lng, geometry_format, geometry_json, coord_system,
-            distance_meters, duration_seconds, distance_text, duration_text, status,
-            expires_at, error_message, requested_at
-            FROM route_segments WHERE trip_slug = ? ORDER BY link_type, link_id""",
-            (slug,),
-        )
-    ]
+    result["routeSegments"] = route_segments_for_trip(db, slug) if include_route_segments else []
     result["lodgings"] = [
         row_to_lodging(row)
         for row in db.execute(
@@ -807,9 +863,19 @@ def create_trip():
 
 @app.get("/api/trips/<slug>")
 def get_trip(slug):
+    include_routes = request.args.get("include_routes", "1").strip().lower() not in {"0", "false", "no", "off"}
     with connection() as db:
-        trip = serialize_trip(db, slug)
+        trip = serialize_trip(db, slug, include_route_segments=include_routes)
     return jsonify(trip) if trip else (jsonify({"error": "Trip not found"}), 404)
+
+
+@app.get("/api/trips/<slug>/route-segments")
+def get_trip_route_segments(slug):
+    with connection() as db:
+        if not db.execute("SELECT 1 FROM trips WHERE slug = ?", (slug,)).fetchone():
+            return jsonify({"error": "Trip not found"}), 404
+        segments = route_segments_for_trip(db, slug)
+    return jsonify(segments)
 
 
 def nominatim_request(path, params):
@@ -2014,14 +2080,40 @@ def delete_local_upload(url):
         target.relative_to(upload_root)
     except ValueError:
         return False
-    if not target.is_file():
-        return False
-    try:
-        target.unlink()
-    except OSError as error:
-        app.logger.warning("Failed to delete upload %s: %s", filename, error)
-        return False
-    return True
+    targets = [target]
+    if filename.endswith("-1280.webp"):
+        stem = filename.removesuffix("-1280.webp")
+        targets.extend(upload_root / f"{stem}-{size}.webp" for size in (320, 640))
+    deleted = False
+    for candidate in targets:
+        if not candidate.is_file():
+            continue
+        try:
+            candidate.unlink()
+            deleted = True
+        except OSError as error:
+            app.logger.warning("Failed to delete upload %s: %s", candidate.name, error)
+    return deleted
+
+
+def save_image_variants(image, slug):
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    stem = f"{slug}-{uuid.uuid4().hex}"
+    with Image.open(image.stream) as opened:
+        opened.seek(0)
+        source = ImageOps.exif_transpose(opened)
+        if source.mode not in {"RGB", "RGBA"}:
+            source = source.convert("RGBA" if "transparency" in source.info else "RGB")
+        for max_width in (320, 640, 1280):
+            rendered = source.copy()
+            rendered.thumbnail((max_width, max_width * 2), Image.Resampling.LANCZOS)
+            rendered.save(
+                UPLOAD_DIR / f"{stem}-{max_width}.webp",
+                format="WEBP",
+                quality=82,
+                method=6,
+            )
+    return f"/uploads/{stem}-1280.webp"
 
 
 def delete_unreferenced_uploads(urls):
@@ -2048,10 +2140,12 @@ def upload_trip_image(slug):
     if extension not in ALLOWED_IMAGE_EXTENSIONS:
         return jsonify({"error": "仅支持 JPG、PNG、WebP 或 GIF 图片"}), 400
 
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    filename = f"{slug}-{uuid.uuid4().hex}{extension}"
-    image.save(UPLOAD_DIR / filename)
-    return jsonify({"url": f"/uploads/{filename}"}), 201
+    try:
+        url = save_image_variants(image, slug)
+    except (OSError, ValueError) as error:
+        app.logger.warning("Failed to process upload %s: %s", image.filename, error)
+        return jsonify({"error": "图片无法读取或格式不受支持"}), 400
+    return jsonify({"url": url}), 201
 
 
 @app.delete("/api/trips/<slug>/images")

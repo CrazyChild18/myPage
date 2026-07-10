@@ -10,10 +10,11 @@ import ImagePreviewModal from '../ImagePreviewModal/ImagePreviewModal';
 import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryNode, ItineraryEdge, Lodging, RouteSegment, Stay, TripSummary } from '../../types';
 import { activitySubtypeColors, activitySubtypeOf, isScheduledNode, itineraryTypeLabel } from '../../utils/itinerary';
-import { Plane, Car, Train, Navigation, Compass } from 'lucide-react';
+import { ChevronDown, Layers3, Plane, Car, Train, Navigation, Compass } from 'lucide-react';
 import { toProviderPoint } from '../../map/coordinates';
 import { amapBrowserKey, amapSecurityCode, googleMapsBrowserKey, mapProviderForTrip, mapProviderLabel } from '../../map/provider';
-import { loadAmap, loadGoogleMaps } from '../../map/scriptLoaders';
+import { loadAmap, loadGoogleMaps, resetGoogleMapsLoader } from '../../map/scriptLoaders';
+import { responsiveImageProps } from '../../utils/images';
 
 type PreviewState = { node: ItineraryNode; index: number } | null;
 type VisibleLodgingMarker = { lodging: Lodging; stays: Stay[] };
@@ -296,9 +297,42 @@ const transportPath = (node: ItineraryNode): [number, number][] => {
   return greatCirclePath(node.departure_lat, node.departure_lng, node.arrival_lat, endLng);
 };
 
+const decodePolyline = (encoded: string, precision = 5): [number, number][] => {
+  const coordinates: [number, number][] = [];
+  const factor = 10 ** precision;
+  let index = 0;
+  let latitude = 0;
+  let longitude = 0;
+
+  const readValue = () => {
+    let result = 0;
+    let shift = 0;
+    let byte = 0;
+    do {
+      if (index >= encoded.length) throw new Error('Invalid encoded polyline');
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+    return result & 1 ? ~(result >> 1) : result >> 1;
+  };
+
+  try {
+    while (index < encoded.length) {
+      latitude += readValue();
+      longitude += readValue();
+      coordinates.push([latitude / factor, longitude / factor]);
+    }
+  } catch {
+    return [];
+  }
+  return coordinates;
+};
+
 const cleanGeometry = (segment?: RouteSegment | null, includeProviderGeometry = false): [number, number][] => {
   if (!segment || (segment.coordSystem === 'gcj02' && !includeProviderGeometry)) return [];
-  return (segment.geometry || [])
+  const geometry = segment.geometryEncoded ? decodePolyline(segment.geometryEncoded) : (segment.geometry || []);
+  return geometry
     .filter((point): point is [number, number] =>
       Array.isArray(point) &&
       point.length >= 2 &&
@@ -702,20 +736,37 @@ const RouteOverlapLegend: React.FC<RouteOverlapLegendProps> = ({
   setActiveEdgeId,
   setHoveredEdgeId,
 }) => {
+  const [expanded, setExpanded] = useState(false);
   if (!groups.length) return null;
 
+  const routeCount = groups.reduce((sum, group) => sum + group.members.length, 0);
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="pointer-events-auto absolute bottom-[calc(42dvh+1rem)] left-1/2 z-[10000] flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-full border border-white/60 bg-white/48 px-3.5 text-[10px] font-black text-slate-800 shadow-lg backdrop-blur-2xl backdrop-saturate-150 transition hover:bg-white/72 sm:bottom-5 sm:left-auto sm:right-5 sm:translate-x-0"
+        aria-label={`展开重叠路线图例，共 ${routeCount} 条路线`}
+      >
+        <Layers3 className="h-4 w-4 text-indigo-600" />
+        重叠路线 · {routeCount}
+      </button>
+    );
+  }
+
   return (
-    <div className="pointer-events-auto absolute bottom-3 left-1/2 z-[10000] w-[min(20rem,calc(100%-2rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-white/55 bg-white/45 shadow-[0_18px_46px_rgba(15,23,42,0.22)] backdrop-blur-2xl backdrop-saturate-150 md:bottom-5 md:left-auto md:right-5 md:translate-x-0">
+    <div className="pointer-events-auto absolute bottom-[calc(42dvh+1rem)] left-1/2 z-[10000] w-[min(20rem,calc(100%-2rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-white/55 bg-white/48 shadow-[0_18px_46px_rgba(15,23,42,0.22)] backdrop-blur-2xl backdrop-saturate-150 sm:bottom-5 sm:left-auto sm:right-5 sm:translate-x-0">
       <div className="flex items-center justify-between border-b border-white/45 px-3.5 py-2.5">
         <div>
           <div className="text-[11px] font-black text-slate-950">重叠路线</div>
           <div className="mt-0.5 text-[9px] font-bold text-slate-500">悬浮高亮，点击锁定</div>
         </div>
-        <div className="rounded-full border border-white/60 bg-white/45 px-2 py-1 text-[9px] font-black text-slate-600 shadow-sm backdrop-blur-md">
-          {groups.reduce((sum, group) => sum + group.members.length, 0)} 条
-        </div>
+        <button type="button" onClick={() => setExpanded(false)} className="flex h-9 w-9 items-center justify-center rounded-full border border-white/60 bg-white/45 text-slate-600 shadow-sm backdrop-blur-md" aria-label="收起重叠路线图例">
+          <ChevronDown className="h-4 w-4" />
+        </button>
       </div>
-      <div className="max-h-48 space-y-2 overflow-y-auto p-2.5">
+      <div className="max-h-[min(38dvh,12rem)] space-y-2 overflow-y-auto p-2.5">
         {groups.map((group) => (
           <div key={group.id} className="rounded-xl border border-white/45 bg-white/34 p-1.5 shadow-sm backdrop-blur-lg">
             <div className="px-1.5 pb-1 text-[9px] font-black text-slate-500">同路段</div>
@@ -920,7 +971,7 @@ const ItineraryNodeMarker: React.FC<ItineraryNodeMarkerProps> = ({
         <div className="max-w-[220px] text-sm font-sans">
           {node.image_url && (
             <button onClick={() => onPreview({ node, index: 0 })} className="group relative mb-2 block h-24 w-full overflow-hidden rounded-lg">
-              <img src={node.image_url} alt={node.title} className="h-full w-full object-cover transition group-hover:scale-105" />
+              <img src={node.image_url} {...responsiveImageProps(node.image_url, '160px')} alt={node.title} className="h-full w-full object-cover transition group-hover:scale-105" />
               <span className="absolute inset-0 flex items-center justify-center bg-slate-950/0 text-[10px] font-bold text-white transition group-hover:bg-slate-950/35">点击查看大图</span>
             </button>
           )}
@@ -1125,7 +1176,7 @@ const LodgingMarker: React.FC<LodgingMarkerProps> = ({ lodging, stays, selected,
       <Popup minWidth={230}>
         <div className="space-y-2">
           {lodgingImagesOf(lodging)[0] && (
-            <img src={lodgingImagesOf(lodging)[0]} alt="" className="h-24 w-full rounded-xl object-cover" />
+            <img src={lodgingImagesOf(lodging)[0]} {...responsiveImageProps(lodgingImagesOf(lodging)[0], '240px')} alt="" className="h-24 w-full rounded-xl object-cover" />
           )}
           <div>
             <div className="text-sm font-black text-slate-900">{lodging.name}</div>
@@ -1175,7 +1226,44 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   const hoverOverlaysRef = useRef<any[]>([]);
   const homeCameraTimersRef = useRef<number[]>([]);
   const lastHomeSlugRef = useRef<string | null>(null);
+  const routeVisualsRef = useRef<Array<{
+    id: string;
+    line: any;
+    halo: any;
+    color: string;
+    weight: number;
+    opacity: number;
+    haloWeight: number;
+    lineZIndex: number;
+    haloZIndex: number;
+  }>>([]);
   const [error, setError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
+
+  useEffect(() => {
+    const onAuthError = () => setError('当前域名未获得 Google Maps Key 授权，请检查 HTTP referrer 限制');
+    window.addEventListener('voyage:google-map-auth-error', onAuthError);
+    return () => window.removeEventListener('voyage:google-map-auth-error', onAuthError);
+  }, []);
+
+  useEffect(() => {
+    const focusedId = hoveredEdgeId || activeEdgeId;
+    routeVisualsRef.current.forEach((route) => {
+      const focused = Boolean(focusedId) && (route.id === focusedId || route.id === `edge:${focusedId}`);
+      const dimmed = Boolean(focusedId) && !focused;
+      route.halo.setOptions({
+        strokeOpacity: dimmed ? ROUTE_FOCUS_DIM_OPACITY : 0.9,
+        strokeWeight: focused ? route.weight + 7 : route.haloWeight,
+        zIndex: focused ? ROUTE_HOVER_Z_INDEX - 1 : route.haloZIndex,
+      });
+      route.line.setOptions({
+        strokeColor: focused ? EDGE_ROUTE_HOVER_COLOR : route.color,
+        strokeOpacity: dimmed ? ROUTE_FOCUS_DIM_OPACITY : focused ? 1 : route.opacity,
+        strokeWeight: focused ? route.weight + 2 : route.weight,
+        zIndex: focused ? ROUTE_HOVER_Z_INDEX : route.lineZIndex,
+      });
+    });
+  }, [activeEdgeId, hoveredEdgeId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1190,7 +1278,8 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             mapTypeControl: false,
             streetViewControl: false,
             fullscreenControl: false,
-            gestureHandling: 'greedy',
+            gestureHandling: mode === 'home' ? 'cooperative' : 'greedy',
+            mapId: import.meta.env.VITE_GOOGLE_MAP_ID || 'DEMO_MAP_ID',
           });
           infoRef.current = new maps.InfoWindow();
           hoverInfoRef.current = new maps.InfoWindow();
@@ -1198,13 +1287,41 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
         if (!infoRef.current) infoRef.current = new maps.InfoWindow();
         if (!hoverInfoRef.current) hoverInfoRef.current = new maps.InfoWindow();
 
+        const removeOverlay = (overlay: any) => {
+          if (typeof overlay?.setMap === 'function') overlay.setMap(null);
+          else if (overlay && 'map' in overlay) overlay.map = null;
+        };
+        const markerImage = (url: string, width: number, height: number) => {
+          const image = document.createElement('img');
+          image.src = url;
+          image.alt = '';
+          image.width = width;
+          image.height = height;
+          image.style.cssText = `display:block;width:${width}px;height:${height}px`;
+          return image;
+        };
+        const hoverDot = (color: string) => {
+          const dot = document.createElement('span');
+          dot.style.cssText = `display:block;width:18px;height:18px;border:3px solid white;border-radius:999px;background:${color};box-shadow:0 3px 10px rgba(15,23,42,.3)`;
+          return dot;
+        };
+        const homeMarkerContent = (title: string) => {
+          const element = document.createElement('div');
+          element.style.cssText = 'display:flex;align-items:center;gap:7px;border:2px solid white;border-radius:999px;background:#38bdf8;padding:5px 9px;color:#0f172a;font:800 11px Inter,system-ui,sans-serif;box-shadow:0 8px 20px rgba(14,165,233,.35);white-space:nowrap';
+          const dot = document.createElement('span');
+          dot.style.cssText = 'width:8px;height:8px;border-radius:999px;background:white';
+          const label = document.createElement('span');
+          label.textContent = title.slice(0, 10);
+          element.append(dot, label);
+          return element;
+        };
         const clearRouteHover = () => {
-          hoverOverlaysRef.current.forEach((overlay) => overlay.setMap?.(null));
+          hoverOverlaysRef.current.forEach(removeOverlay);
           hoverOverlaysRef.current = [];
           hoverInfoRef.current?.close();
         };
         clearRouteHover();
-        overlaysRef.current.forEach((overlay) => overlay.setMap?.(null));
+        overlaysRef.current.forEach(removeOverlay);
         overlaysRef.current = [];
         const bounds = new maps.LatLngBounds();
         let hasBounds = false;
@@ -1258,11 +1375,11 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
         if (mode === 'home') {
           trips.forEach((trip) => {
             remember(trip.center_lat, trip.center_lng);
-            const marker = new maps.Marker({
+            const marker = new maps.marker.AdvancedMarkerElement({
               map: mapRef.current,
               position: { lat: trip.center_lat, lng: trip.center_lng },
               title: trip.title,
-              label: { text: trip.title.slice(0, 8), color: '#111827', fontWeight: '800', fontSize: '11px' },
+              content: homeMarkerContent(trip.title),
             });
             marker.addListener('click', () => {
               onSelectHomeTrip?.(trip.slug);
@@ -1330,17 +1447,10 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
                 strokeWeight: Number(hoverStyle.weight || 5),
                 strokeOpacity: 1,
               });
-              const marker = new maps.Marker({
+              const marker = new maps.marker.AdvancedMarkerElement({
                 map: mapRef.current,
                 position: midpoint,
-                icon: {
-                  path: maps.SymbolPath.CIRCLE,
-                  fillColor: String(style.color || '#db2777'),
-                  fillOpacity: 1,
-                  strokeColor: ROUTE_HALO_COLOR,
-                  strokeWeight: 3,
-                  scale: 7,
-                },
+                content: hoverDot(String(style.color || '#db2777')),
               });
               hoverOverlaysRef.current.push(marker);
               hoverInfoRef.current.setContent(routeLabelHtml(label));
@@ -1406,17 +1516,10 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
                 strokeWeight: Number(hoverStyle.weight || 5),
                 strokeOpacity: 1,
               });
-              const marker = new maps.Marker({
+              const marker = new maps.marker.AdvancedMarkerElement({
                 map: mapRef.current,
                 position: midpoint,
-                icon: {
-                  path: maps.SymbolPath.CIRCLE,
-                  fillColor: String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR),
-                  fillOpacity: 1,
-                  strokeColor: ROUTE_HALO_COLOR,
-                  strokeWeight: 3,
-                  scale: 7,
-                },
+                content: hoverDot(String(hoverStyle.color || EDGE_ROUTE_HOVER_COLOR)),
               });
               hoverOverlaysRef.current.push(marker);
               hoverInfoRef.current.setContent(routeLabelHtml(label));
@@ -1482,17 +1585,10 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
                 strokeWeight: Number(hoverStyle.weight || 5),
                 strokeOpacity: 1,
               });
-              const marker = new maps.Marker({
+              const marker = new maps.marker.AdvancedMarkerElement({
                 map: mapRef.current,
                 position: midpoint,
-                icon: {
-                  path: maps.SymbolPath.CIRCLE,
-                  fillColor: LODGING_ROUTE_HOVER_COLOR,
-                  fillOpacity: 1,
-                  strokeColor: ROUTE_HALO_COLOR,
-                  strokeWeight: 3,
-                  scale: 7,
-                },
+                content: hoverDot(LODGING_ROUTE_HOVER_COLOR),
               });
               hoverOverlaysRef.current.push(marker);
               hoverInfoRef.current.setContent(routeLabelHtml(label));
@@ -1511,20 +1607,16 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
           visibleLodgings.forEach(({ lodging, stays }) => {
             remember(lodging.lat, lodging.lng);
             const selected = activeNodeId === lodging.id;
-            const marker = new maps.Marker({
+            const marker = new maps.marker.AdvancedMarkerElement({
               map: mapRef.current,
               position: { lat: lodging.lat, lng: lodging.lng },
               title: lodging.name,
-              icon: {
-                url: providerMarkerSvgUrl('#10b981', 'hotel', selected),
-                scaledSize: new maps.Size(selected ? 48 : 42, selected ? 54 : 48),
-                anchor: new maps.Point(selected ? 24 : 21, selected ? 51 : 46),
-              },
+              content: markerImage(providerMarkerSvgUrl('#10b981', 'hotel', selected), selected ? 48 : 42, selected ? 54 : 48),
               zIndex: selected ? ROUTE_HOVER_Z_INDEX + 30 : undefined,
             });
             const openLodgingInfo = () => {
               infoRef.current.setContent(lodgingInfoHtml(lodging, stays));
-              infoRef.current.open(mapRef.current, marker);
+              infoRef.current.open({ map: mapRef.current, anchor: marker });
             };
             marker.addListener('click', () => {
               clearRouteHover();
@@ -1538,20 +1630,16 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
           visibleNodes.forEach((node) => {
             remember(node.lat, node.lng);
             const selected = activeNodeId === node.id;
-            const marker = new maps.Marker({
+            const marker = new maps.marker.AdvancedMarkerElement({
               map: mapRef.current,
               position: { lat: node.lat, lng: node.lng },
               title: node.title,
-              icon: {
-                url: providerMarkerSvgUrl(nodeColor(node), providerMarkerVisualType(node), selected),
-                scaledSize: new maps.Size(selected ? 48 : 42, selected ? 54 : 48),
-                anchor: new maps.Point(selected ? 24 : 21, selected ? 51 : 46),
-              },
+              content: markerImage(providerMarkerSvgUrl(nodeColor(node), providerMarkerVisualType(node), selected), selected ? 48 : 42, selected ? 54 : 48),
               zIndex: selected ? ROUTE_HOVER_Z_INDEX + 30 : undefined,
             });
             const openNodeInfo = () => {
               infoRef.current.setContent(nodeInfoHtml(node));
-              infoRef.current.open(mapRef.current, marker);
+              infoRef.current.open({ map: mapRef.current, anchor: marker });
             };
             marker.addListener('click', () => {
               clearRouteHover();
@@ -1561,7 +1649,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
             marker.addListener('mouseover', () => {
               clearRouteHover();
               hoverInfoRef.current.setContent(nodeHoverLabelHtml(node));
-              hoverInfoRef.current.open(mapRef.current, marker);
+              hoverInfoRef.current.open({ map: mapRef.current, anchor: marker });
             });
             marker.addListener('mouseout', () => hoverInfoRef.current?.close());
             if (activeNodeId === node.id) openNodeInfo();
@@ -1569,6 +1657,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
           });
         }
 
+        routeVisualsRef.current = routeVisuals;
         if (hasBounds && mode === 'trip') mapRef.current.fitBounds(bounds, 80);
         else if (hasBounds && !selectedHomeTrip) mapRef.current.fitBounds(bounds, 80);
       })
@@ -1578,7 +1667,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
       cancelled = true;
       clearGoogleHomeCameraTimers(homeCameraTimersRef);
     };
-  }, [activeEdgeId, activeNodeId, hoveredEdgeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
+  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, retryToken, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -1588,6 +1677,22 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
           <div className="max-w-sm rounded-3xl border border-white/15 bg-slate-950/80 p-5 shadow-2xl">
             <div className="text-sm font-black">Google Maps 未启用</div>
             <div className="mt-2 text-xs font-semibold text-slate-300">{error}</div>
+            <button
+              type="button"
+              onClick={() => {
+                if (window.google?.maps) {
+                  window.location.reload();
+                  return;
+                }
+                setError(null);
+                resetGoogleMapsLoader();
+                mapRef.current = null;
+                setRetryToken((value) => value + 1);
+              }}
+              className="mt-4 min-h-11 rounded-xl bg-white px-4 text-xs font-black text-slate-900 transition hover:bg-slate-100"
+            >
+              重新加载地图
+            </button>
           </div>
         </div>
       )}
@@ -1622,7 +1727,37 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   const infoRef = useRef<any>(null);
   const hoverInfoRef = useRef<any>(null);
   const hoverOverlaysRef = useRef<any[]>([]);
+  const routeVisualsRef = useRef<Array<{
+    id: string;
+    line: any;
+    halo: any;
+    color: string;
+    weight: number;
+    opacity: number;
+    haloWeight: number;
+    lineZIndex: number;
+    haloZIndex: number;
+  }>>([]);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const focusedId = hoveredEdgeId || activeEdgeId;
+    routeVisualsRef.current.forEach((route) => {
+      const focused = Boolean(focusedId) && (route.id === focusedId || route.id === `edge:${focusedId}`);
+      const dimmed = Boolean(focusedId) && !focused;
+      route.halo.setOptions({
+        strokeOpacity: dimmed ? ROUTE_FOCUS_DIM_OPACITY : 0.9,
+        strokeWeight: focused ? route.weight + 7 : route.haloWeight,
+        zIndex: focused ? ROUTE_HOVER_Z_INDEX - 1 : route.haloZIndex,
+      });
+      route.line.setOptions({
+        strokeColor: focused ? EDGE_ROUTE_HOVER_COLOR : route.color,
+        strokeOpacity: dimmed ? ROUTE_FOCUS_DIM_OPACITY : focused ? 1 : route.opacity,
+        strokeWeight: focused ? route.weight + 2 : route.weight,
+        zIndex: focused ? ROUTE_HOVER_Z_INDEX : route.lineZIndex,
+      });
+    });
+  }, [activeEdgeId, hoveredEdgeId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2000,6 +2135,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
             overlaysRef.current.push(marker);
           });
         }
+        routeVisualsRef.current = routeVisuals;
         if (mode === 'home' && selectedHomeTrip) {
           mapRef.current.setZoomAndCenter(homeTripZoom(selectedHomeTrip), [selectedHomeTrip.center_lng, selectedHomeTrip.center_lat]);
         } else if (boundsPoints.length) mapRef.current.setFitView(overlaysRef.current, false, [70, 70, 70, 70]);
@@ -2009,7 +2145,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [activeEdgeId, activeNodeId, hoveredEdgeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
+  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">

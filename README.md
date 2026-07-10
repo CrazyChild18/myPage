@@ -29,6 +29,7 @@ VITE_AMAP_JS_API_KEY=              # 前端高德地图 JS
 VITE_AMAP_SECURITY_CODE=           # 高德安全密钥，如控制台要求
 GOOGLE_MAPS_API_KEY=               # 后端 Google Places / Geocoding / Routes
 VITE_GOOGLE_MAPS_BROWSER_KEY=      # 前端 Google Maps JS
+VITE_GOOGLE_MAP_ID=                # 可选，Advanced Marker 使用的 Google Map ID
 OVERSEAS_GEOCODE_PROVIDER=google
 HTTP_PROXY=                        # 服务器无法直连 Google / GitHub 时填写
 HTTPS_PROXY=
@@ -117,6 +118,7 @@ docker build \
   --build-arg VITE_AMAP_JS_API_KEY="$VITE_AMAP_JS_API_KEY" \
   --build-arg VITE_AMAP_SECURITY_CODE="$VITE_AMAP_SECURITY_CODE" \
   --build-arg VITE_GOOGLE_MAPS_BROWSER_KEY="$VITE_GOOGLE_MAPS_BROWSER_KEY" \
+  --build-arg VITE_GOOGLE_MAP_ID="$VITE_GOOGLE_MAP_ID" \
   -t voyageplanner:latest .
 ```
 
@@ -162,6 +164,7 @@ AMAP_WEB_SERVICE_KEY=...
 VITE_AMAP_JS_API_KEY=...
 GOOGLE_MAPS_API_KEY=...
 VITE_GOOGLE_MAPS_BROWSER_KEY=...
+VITE_GOOGLE_MAP_ID=...             # 可选；未配置时使用官方 DEMO_MAP_ID
 OVERSEAS_GEOCODE_PROVIDER=google
 ```
 

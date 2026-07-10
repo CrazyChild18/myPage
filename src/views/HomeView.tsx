@@ -14,6 +14,7 @@ import {
 import { AnimatePresence, motion } from 'motion/react';
 import { TripRegion, TripSummary } from '../types';
 import { tripRegionLabel } from '../map/provider';
+import { responsiveImageProps } from '../utils/images';
 
 interface HomeViewProps {
   onOpenTrip: (slug: string) => void;
@@ -244,7 +245,7 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
                   }`}
                 >
                   <div className="flex gap-3 p-2.5">
-                    <img src={trip.cover_image_url} alt="" className="h-20 w-24 shrink-0 rounded-xl object-cover" />
+                    <img src={trip.cover_image_url} {...responsiveImageProps(trip.cover_image_url, '96px')} alt="" className="h-20 w-24 shrink-0 rounded-xl object-cover" />
                     <div className="min-w-0 flex-1 py-1">
                       <div className="text-[10px] font-bold text-indigo-300">{formatDateRange(trip)}</div>
                       <h2 className="mt-1 truncate text-sm font-bold text-white">{trip.title}</h2>
@@ -271,7 +272,7 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
             className="pointer-events-auto absolute bottom-5 right-4 z-[1001] w-[calc(100%-2rem)] overflow-hidden rounded-[24px] border border-white/15 bg-slate-950/84 shadow-2xl backdrop-blur-2xl sm:hidden"
           >
             <div className="flex gap-3 p-3">
-              <img src={selectedTrip.cover_image_url} alt="" className="h-28 w-28 shrink-0 rounded-2xl object-cover" />
+              <img src={selectedTrip.cover_image_url} {...responsiveImageProps(selectedTrip.cover_image_url, '112px')} alt="" className="h-28 w-28 shrink-0 rounded-2xl object-cover" />
               <div className="min-w-0 flex-1 py-1">
                 <div className="text-[10px] font-bold text-indigo-300">{formatDateRange(selectedTrip)}</div>
                 <h2 className="mt-1 line-clamp-2 text-sm font-black">{selectedTrip.title}</h2>
@@ -291,7 +292,7 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
       {selectedTrip && (
         <div className="pointer-events-auto absolute bottom-8 right-[400px] z-[1000] hidden w-[360px] overflow-hidden rounded-[28px] border border-white/15 bg-slate-950/78 shadow-2xl backdrop-blur-2xl lg:block">
           <div className="relative h-40 overflow-hidden">
-            <img src={selectedTrip.cover_image_url} alt={selectedTrip.title} className="h-full w-full object-cover" />
+            <img src={selectedTrip.cover_image_url} {...responsiveImageProps(selectedTrip.cover_image_url, '(max-width: 768px) 100vw, 50vw')} alt={selectedTrip.title} className="h-full w-full object-cover" />
             <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/18 to-transparent" />
             <div className="absolute left-4 top-4 rounded-full border border-white/20 bg-slate-950/58 px-3 py-1 text-[10px] font-black text-white backdrop-blur-md">{formatDateRange(selectedTrip)}</div>
             <div className="absolute bottom-4 left-4 right-4">

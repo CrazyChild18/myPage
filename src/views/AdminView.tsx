@@ -30,6 +30,7 @@ import LocationPicker from '../components/LocationPicker/LocationPicker';
 import { useItineraryStore } from '../store/useItineraryStore';
 import { ActivitySubtype, EdgeAnchor, EdgeDisplayStatus, EdgeTransportType, ItineraryEdge, ItineraryNode, ItineraryType, Lodging, Stay, TransportMode } from '../types';
 import { mapProviderForTrip } from '../map/provider';
+import { responsiveImageProps } from '../utils/images';
 import {
   activitySubtypeLabels,
   activitySubtypeOf,
@@ -867,8 +868,12 @@ export default function AdminView() {
   const [libraryQuery, setLibraryQuery] = useState('');
   const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>('all');
   const [showBeijingTime, setShowBeijingTime] = useState(false);
+  const [compactPanel, setCompactPanel] = useState<'library' | 'schedule'>('schedule');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scheduleGridRef = useRef<HTMLDivElement>(null);
+  const scheduleScrollRef = useRef<HTMLDivElement>(null);
+  const editorDialogRef = useRef<HTMLFormElement>(null);
+  const editorCloseRef = useRef<HTMLButtonElement>(null);
   const resizeStateRef = useRef<{
     node: ItineraryNode;
     startY: number;
@@ -1007,11 +1012,29 @@ export default function AdminView() {
 
   useEffect(() => {
     if (!editorOpen) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') reset();
+      if (event.key === 'Tab' && editorDialogRef.current) {
+        const focusable = [...editorDialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    editorCloseRef.current?.focus();
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      previouslyFocused?.focus();
+    };
   }, [editorOpen]);
 
   const currentDayNodes = useMemo(
@@ -1035,6 +1058,15 @@ export default function AdminView() {
     () => layoutScheduleEvents(scheduledDisplayNodes, currentDay, dateByDay, trip?.start_date),
     [currentDay, dateByDay, scheduledDisplayNodes, trip?.start_date],
   );
+  useEffect(() => {
+    if (!scheduleScrollRef.current) return;
+    const earliest = scheduleEvents.reduce((minimum, event) => Math.min(minimum, event.start), END_MINUTES);
+    const targetMinutes = Math.max(START_MINUTES, (earliest === END_MINUTES ? 8 * 60 : earliest) - 60);
+    scheduleScrollRef.current.scrollTo({
+      top: (targetMinutes / SLOT_MINUTES) * SLOT_HEIGHT,
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    });
+  }, [currentDay, scheduleEvents.length]);
   const currentDayTimeZoneTransitions = useMemo(
     () => scheduleEvents
       .filter((event) => event.node.type === 'transport')
@@ -2311,10 +2343,31 @@ export default function AdminView() {
         : pointLocationPanel;
 
   return (
-    <div className="h-full min-h-0">
-      {message && <div className="fixed left-1/2 top-20 z-[10000] -translate-x-1/2 rounded-xl bg-slate-900 px-5 py-3 text-xs font-semibold text-white shadow-2xl">{message}</div>}
+    <div className="flex h-full min-h-0 flex-col">
+      {message && <div className="fixed left-1/2 top-20 z-[10000] -translate-x-1/2 rounded-xl bg-slate-900 px-5 py-3 text-xs font-semibold text-white shadow-2xl" role="status" aria-live="polite">{message}</div>}
 
-      <div className="grid h-full min-h-0 w-full grid-cols-1 gap-4 overflow-y-auto xl:overflow-visible xl:grid-cols-[360px_minmax(520px,1fr)] 2xl:grid-cols-[440px_minmax(680px,1fr)]">
+      <div className="mb-3 grid shrink-0 grid-cols-2 rounded-xl border border-white/70 bg-white/55 p-1 shadow-sm backdrop-blur-xl xl:hidden" role="tablist" aria-label="编辑行程面板">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={compactPanel === 'library'}
+          onClick={() => setCompactPanel('library')}
+          className={`min-h-11 rounded-lg px-3 text-xs font-black transition ${compactPanel === 'library' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500'}`}
+        >
+          项目库 · {libraryNodes.length}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={compactPanel === 'schedule'}
+          onClick={() => setCompactPanel('schedule')}
+          className={`min-h-11 rounded-lg px-3 text-xs font-black transition ${compactPanel === 'schedule' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500'}`}
+        >
+          D{currentDay} 时间表
+        </button>
+      </div>
+
+      <div className="grid min-h-0 w-full flex-1 grid-cols-1 gap-4 overflow-hidden xl:grid-cols-[360px_minmax(520px,1fr)] 2xl:grid-cols-[440px_minmax(680px,1fr)]">
         <aside
           onDragOver={(event) => {
             if (!canDropToLibrary) return;
@@ -2322,7 +2375,7 @@ export default function AdminView() {
             event.dataTransfer.dropEffect = 'move';
           }}
           onDrop={handleLibraryDrop}
-          className={`flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/60 bg-white/50 p-3 shadow-lg backdrop-blur-xl transition xl:h-full ${canDropToLibrary ? 'ring-2 ring-indigo-300/60' : ''}`}
+          className={`${compactPanel === 'library' ? 'flex' : 'hidden'} h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-white/60 bg-white/50 p-3 shadow-lg backdrop-blur-xl transition xl:flex ${canDropToLibrary ? 'ring-2 ring-indigo-300/60' : ''}`}
         >
           <div className="mb-3 shrink-0 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
@@ -2417,7 +2470,7 @@ export default function AdminView() {
                           aria-label={`${hasStays ? '编辑' : '安排'}住宿 ${lodging.name}`}
                         >
                           {coverUrl ? (
-                            <img src={coverUrl} alt="" className="h-full w-full object-cover" />
+                            <img src={coverUrl} {...responsiveImageProps(coverUrl, '96px')} alt="" className="h-full w-full object-cover" />
                           ) : (
                             <span className="flex h-full w-full items-center justify-center">
                               <BedDouble className="h-6 w-6" />
@@ -2509,7 +2562,7 @@ export default function AdminView() {
                   <div className="flex items-stretch gap-3">
                     <div className="relative h-[74px] w-[92px] shrink-0 overflow-hidden rounded-xl border border-white/70 bg-white/65">
                       {coverUrl ? (
-                        <img src={coverUrl} alt="" className="h-full w-full object-cover" />
+                        <img src={coverUrl} {...responsiveImageProps(coverUrl, '96px')} alt="" className="h-full w-full object-cover" />
                       ) : (
                         <div className="flex h-full w-full items-center justify-center">
                           <Icon className="h-6 w-6 text-slate-400" />
@@ -2554,7 +2607,7 @@ export default function AdminView() {
           </div>
         </aside>
 
-        <section className="flex min-h-[520px] min-w-0 flex-col overflow-hidden rounded-2xl border border-white/60 bg-white/55 p-3 shadow-lg backdrop-blur-xl xl:h-full xl:min-h-0">
+        <section className={`${compactPanel === 'schedule' ? 'flex' : 'hidden'} h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-white/60 bg-white/55 p-3 shadow-lg backdrop-blur-xl xl:flex`}>
           <div className="mb-3 flex shrink-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <h3 className="text-sm font-black text-slate-900">按天时间表</h3>
@@ -2632,7 +2685,7 @@ export default function AdminView() {
                     className={`group flex min-w-0 items-center gap-3 overflow-hidden rounded-2xl border bg-gradient-to-br px-3 py-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${editingStayId === stay.id ? 'border-emerald-300 from-emerald-50 to-white ring-2 ring-emerald-300/30' : 'border-emerald-100 from-white to-emerald-50/70 hover:border-emerald-200'}`}
                   >
                     <span className="relative flex h-12 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-emerald-100 text-emerald-700 shadow-sm">
-                      {coverUrl ? <img src={coverUrl} alt="" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" /> : <BedDouble className="h-5 w-5" />}
+                      {coverUrl ? <img src={coverUrl} {...responsiveImageProps(coverUrl, '96px')} alt="" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" /> : <BedDouble className="h-5 w-5" />}
                       <span className="absolute inset-x-0 bottom-0 bg-slate-950/55 px-1 py-0.5 text-center text-[8px] font-black text-white">N{nightIndex}</span>
                     </span>
                     <span className="min-w-0 flex-1">
@@ -2647,7 +2700,7 @@ export default function AdminView() {
               })}
             </div>
           )}
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white">
+          <div ref={scheduleScrollRef} className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white">
             <div
               ref={scheduleGridRef}
               onDragOver={handleScheduleDragOver}
@@ -2658,14 +2711,14 @@ export default function AdminView() {
                   clearDragPreview();
                 }
               }}
-              className="relative"
+              className="admin-schedule-grid relative"
               style={{ height: slots.length * SLOT_HEIGHT }}
             >
               {slots.map((minutes) => (
                 <div
                   key={minutes}
                   className="grid border-t border-slate-100 first:border-t-0"
-                  style={{ gridTemplateColumns: '58px 104px minmax(0, 1fr)', height: SLOT_HEIGHT }}
+                  style={{ gridTemplateColumns: 'var(--schedule-time-axis) var(--schedule-lodging-axis) minmax(0, 1fr)', height: SLOT_HEIGHT }}
                 >
                   <div className="select-none border-r border-slate-100 pr-2 pt-1 text-right text-[9px] font-bold tabular-nums text-slate-400">
                     {minutes % 60 === 0 ? formatTime(minutes) : ''}
@@ -2679,12 +2732,12 @@ export default function AdminView() {
                 </div>
               ))}
 
-              <div className="pointer-events-none absolute left-[58px] top-0 z-10 h-full w-[104px] border-r border-slate-200/90 bg-gradient-to-r from-slate-50/85 via-white/60 to-slate-50/45">
+              <div className="pointer-events-none absolute top-0 z-10 h-full border-r border-slate-200/90 bg-gradient-to-r from-slate-50/85 via-white/60 to-slate-50/45" style={{ left: 'var(--schedule-time-axis)', width: 'var(--schedule-lodging-axis)' }}>
                 <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-emerald-100/70" />
                 <span className="absolute inset-y-0 right-0 w-px bg-slate-200" />
               </div>
 
-              <div className="pointer-events-none absolute left-[58px] top-0 z-20 w-[104px] px-1">
+              <div className="pointer-events-none absolute top-0 z-20 px-1" style={{ left: 'var(--schedule-time-axis)', width: 'var(--schedule-lodging-axis)' }}>
                 {currentLodgingBands.map((band) => {
                   const top = ((band.start - START_MINUTES) / SLOT_MINUTES) * SLOT_HEIGHT + 2;
                   const height = Math.max(30, ((band.end - band.start) / SLOT_MINUTES) * SLOT_HEIGHT - 4);
@@ -2716,7 +2769,7 @@ export default function AdminView() {
                   );
                 })}
               </div>
-              <div className="pointer-events-none absolute right-3 top-0" style={{ left: 168 }}>
+              <div className="pointer-events-none absolute right-3 top-0" style={{ left: 'calc(var(--schedule-time-axis) + var(--schedule-lodging-axis))' }}>
                 {scheduleEvents.map((event) => {
                   const top = ((event.start - START_MINUTES) / SLOT_MINUTES) * SLOT_HEIGHT + 2;
                   const height = Math.max(28, ((event.end - event.start) / SLOT_MINUTES) * SLOT_HEIGHT - 4);
@@ -2930,7 +2983,7 @@ export default function AdminView() {
                         <div className="relative z-10 flex h-full min-w-0 items-center gap-2 pl-2 pr-14">
                           {showCompactThumb ? (
                             <div className={`${narrowPointCard ? 'h-8 w-9' : 'h-9 w-12'} shrink-0 overflow-hidden rounded-lg border border-white/25 bg-white/16 shadow-inner backdrop-blur`}>
-                              <img src={coverUrl} alt="" className="h-full w-full object-cover" />
+                              <img src={coverUrl} {...responsiveImageProps(coverUrl, '160px')} alt="" className="h-full w-full object-cover" />
                             </div>
                           ) : (
                             <span className={`${tinyPointCard ? 'h-6 w-6' : 'h-8 w-8'} flex shrink-0 items-center justify-center rounded-lg bg-white/16 text-white/80 backdrop-blur`}>
@@ -2976,7 +3029,7 @@ export default function AdminView() {
                             {showScheduleThumb && (
                               <div className="h-10 w-12 shrink-0 overflow-hidden rounded-lg border border-white/25 bg-white/16 shadow-inner backdrop-blur">
                                 {coverUrl ? (
-                                  <img src={coverUrl} alt="" className="h-full w-full object-cover" />
+                                  <img src={coverUrl} {...responsiveImageProps(coverUrl, '160px')} alt="" className="h-full w-full object-cover" />
                                 ) : (
                                   <div className="flex h-full w-full items-center justify-center">
                                     <Icon className="h-4 w-4 text-white/78" />
@@ -3022,7 +3075,7 @@ export default function AdminView() {
                 <div
                   key={transition.id}
                   className="pointer-events-none absolute right-3 z-40"
-                  style={{ left: 168, top: (transition.minutes / SLOT_MINUTES) * SLOT_HEIGHT }}
+                  style={{ left: 'calc(var(--schedule-time-axis) + var(--schedule-lodging-axis))', top: (transition.minutes / SLOT_MINUTES) * SLOT_HEIGHT }}
                 >
                   <div className="absolute inset-x-0 top-0 border-t border-dashed border-sky-300" />
                   <div className="absolute right-2 top-0 -translate-y-1/2 rounded-full border border-sky-100 bg-white/95 px-2 py-1 text-[8px] font-black text-sky-700 shadow-sm">
@@ -3038,7 +3091,7 @@ export default function AdminView() {
                 return (
                   <div
                     className="pointer-events-none absolute right-3 z-50"
-                    style={{ left: 168, top: previewTop, height: previewHeight }}
+                    style={{ left: 'calc(var(--schedule-time-axis) + var(--schedule-lodging-axis))', top: previewTop, height: previewHeight }}
                   >
                     <div className="absolute inset-0 rounded-xl border border-indigo-400/80 bg-indigo-500/12 shadow-[0_16px_34px_rgba(79,70,229,0.18),inset_0_1px_0_rgba(255,255,255,0.78)] backdrop-blur-[2px]" />
                     <div className="absolute inset-x-0 top-0 border-t-2 border-indigo-500" />
@@ -3083,8 +3136,9 @@ export default function AdminView() {
         {editorOpen && createPortal((
         <div className="fixed inset-0 z-[30000] flex items-center justify-center bg-slate-950/35 px-3 py-16 backdrop-blur-md sm:px-5 sm:py-24">
           <button type="button" aria-label="关闭编辑弹窗" onClick={() => reset()} className="absolute inset-0 cursor-default" />
-          <form onSubmit={editorMode === 'lodging' ? submitLodgingStay : submit} className="relative z-10 max-h-[calc(100vh-8rem)] w-full max-w-[780px] min-w-0 space-y-3 overflow-y-auto rounded-[24px] border border-white/70 bg-white/82 p-4 shadow-[0_28px_90px_rgba(15,23,42,0.30)] backdrop-blur-2xl backdrop-saturate-150 sm:max-h-[calc(100vh-12rem)] sm:p-5 lg:max-w-[1120px]">
+          <form ref={editorDialogRef} role="dialog" aria-modal="true" aria-labelledby="trip-editor-title" onSubmit={editorMode === 'lodging' ? submitLodgingStay : submit} className="relative z-10 max-h-[calc(100dvh-3rem)] w-full max-w-[780px] min-w-0 space-y-3 overflow-y-auto rounded-[24px] border border-white/70 bg-white/82 p-4 shadow-[0_28px_90px_rgba(15,23,42,0.30)] backdrop-blur-2xl backdrop-saturate-150 sm:max-h-[calc(100dvh-6rem)] sm:p-5 lg:max-w-[1120px]">
           <button
+            ref={editorCloseRef}
             type="button"
             onClick={() => reset()}
             aria-label="关闭"
@@ -3094,7 +3148,7 @@ export default function AdminView() {
           </button>
           <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3 pr-10">
             <div>
-              <h3 className="text-sm font-black text-slate-900">{editorTitle}</h3>
+              <h3 id="trip-editor-title" className="text-sm font-black text-slate-900">{editorTitle}</h3>
               <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
                 {editorSubtitle}
               </p>
@@ -3285,7 +3339,7 @@ export default function AdminView() {
                 <div className="mt-2 grid grid-cols-3 gap-2">
                   {(lodgingForm.image_urls || []).map((url, index) => (
                     <div key={url} className="group relative">
-                      <img src={url} alt="" className="h-24 w-full rounded-xl object-cover" />
+                      <img src={url} {...responsiveImageProps(url, '240px')} alt="" className="h-24 w-full rounded-xl object-cover" />
                       {index === 0 && <span className="absolute bottom-1 left-1 rounded bg-slate-950/70 px-1.5 py-0.5 text-[8px] font-bold text-white">封面</span>}
                       <button type="button" onClick={() => removeImage(url, 'lodging')} className="absolute right-1 top-1 rounded-full bg-slate-950/70 p-1 text-white opacity-0 transition group-hover:opacity-100"><X className="h-3 w-3" /></button>
                     </div>
@@ -3571,7 +3625,7 @@ export default function AdminView() {
                 <div className="grid grid-cols-3 gap-2">
                   {(form.image_urls || []).map((url, index) => (
                     <div key={url} className="group relative">
-                      <img src={url} alt="" className="h-24 w-full rounded-xl object-cover" />
+                      <img src={url} {...responsiveImageProps(url, '240px')} alt="" className="h-24 w-full rounded-xl object-cover" />
                       {index === 0 && <span className="absolute bottom-1 left-1 rounded bg-slate-950/70 px-1.5 py-0.5 text-[8px] font-bold text-white">封面</span>}
                       <button type="button" onClick={() => removeImage(url)} className="absolute right-1 top-1 rounded-full bg-slate-950/70 p-1 text-white opacity-0 transition group-hover:opacity-100"><X className="h-3 w-3" /></button>
                     </div>

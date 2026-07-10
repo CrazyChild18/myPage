@@ -1,9 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { useItineraryStore } from '../store/useItineraryStore';
-import { Accommodation, ItineraryNode, ItineraryType, TransportMode } from '../types';
-import { compareItineraryNodes, isScheduledNode, itineraryTypeLabel, itineraryTypeTone } from '../utils/itinerary';
-import ImagePreviewModal from '../components/ImagePreviewModal/ImagePreviewModal';
-import TransportTicket from '../components/TransportTicket/TransportTicket';
+import { Accommodation, ItineraryNode, Lodging, Stay, TransportMode } from '../types';
+import { compareItineraryNodes, isScheduledNode } from '../utils/itinerary';
 import {
   inferTimeZoneFromLocation,
   timeZoneOptionLabel,
@@ -13,39 +11,13 @@ import {
   Bed,
   CalendarDays,
   Car,
-  Clock,
   FileText,
-  Image as ImageIcon,
-  MapPin,
   Plane,
   Printer,
   Route,
-  Users,
 } from 'lucide-react';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-const typeLabels: Record<ItineraryType, string> = {
-  transfer: '转机',
-  transport: '交通',
-  activity: '活动',
-  hotel: '住宿',
-  restaurant: '餐饮',
-  sightseeing: '景点',
-  leisure: '休闲',
-  shopping: '采购',
-};
-
-const typeStyles: Record<ItineraryType, string> = {
-  transfer: 'bg-sky-50 text-sky-700',
-  transport: 'bg-cyan-50 text-cyan-700',
-  activity: 'bg-violet-50 text-violet-700',
-  hotel: 'bg-emerald-50 text-emerald-700',
-  restaurant: 'bg-rose-50 text-rose-700',
-  sightseeing: 'bg-violet-50 text-violet-700',
-  leisure: 'bg-amber-50 text-amber-700',
-  shopping: 'bg-pink-50 text-pink-700',
-};
 
 const transportModeLabels: Record<TransportMode, string> = {
   flight: '飞机',
@@ -66,12 +38,6 @@ type DaySummary = {
   transport: string;
   overnight: string;
 };
-
-const nodeImages = (node: ItineraryNode) =>
-  node.image_urls?.length ? node.image_urls : node.image_url ? [node.image_url] : [];
-
-const isTicketTransport = (node: ItineraryNode) =>
-  Boolean(node.transport_mode || node.departure_place || node.arrival_place || /航班|高铁|火车|飞往|→/.test(node.title));
 
 const parseDateParts = (date: string) => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
@@ -290,6 +256,76 @@ const checkInDateText = (dates: string) => {
   return matched?.[1] || dates;
 };
 
+type AccommodationRow = {
+  id: string;
+  checkInDate: string;
+  checkInTime: string;
+  checkOutDate: string;
+  checkOutTime: string;
+  nights: number;
+  name: string;
+  address: string;
+  bookingSite: string;
+  reservationNo: string;
+  guests: string;
+  roomType: string;
+  price: string;
+};
+
+const nightsBetween = (checkInDate: string, checkOutDate: string) => {
+  const checkIn = parseLocalDate(checkInDate);
+  const checkOut = parseLocalDate(checkOutDate);
+  if (!checkIn || !checkOut || checkOut <= checkIn) return 1;
+  return Math.max(1, Math.round((checkOut.getTime() - checkIn.getTime()) / MS_PER_DAY));
+};
+
+const stayCoversNight = (stay: Stay, date: string) =>
+  stay.status !== 'cancelled' && stay.check_in_date <= date && date < stay.check_out_date;
+
+const buildAccommodationRows = (
+  lodgings: Lodging[],
+  stays: Stay[],
+  fallback: Accommodation[],
+): AccommodationRow[] => {
+  const lodgingById = new Map(lodgings.map((lodging) => [lodging.id, lodging]));
+  const activeStays = stays.filter((stay) => stay.status !== 'cancelled');
+  if (activeStays.length) {
+    return activeStays.map((stay) => {
+      const lodging = lodgingById.get(stay.lodging_id);
+      return {
+        id: stay.id,
+        checkInDate: stay.check_in_date,
+        checkInTime: stay.check_in_time,
+        checkOutDate: stay.check_out_date,
+        checkOutTime: stay.check_out_time,
+        nights: nightsBetween(stay.check_in_date, stay.check_out_date),
+        name: lodging?.name || '住宿待补充',
+        address: lodging?.address || '待补充',
+        bookingSite: lodging?.booking_site || '爱彼迎',
+        reservationNo: lodging?.reservation_no || '待补充',
+        guests: stay.guests ? `${stay.guests} 人` : '待补充',
+        roomType: stay.room_type || '待补充',
+        price: stay.price || '待补充',
+      };
+    });
+  }
+  return fallback.map((stay, index) => ({
+    id: `${stay.name}-${index}`,
+    checkInDate: checkInDateText(stay.dates),
+    checkInTime: '待补充',
+    checkOutDate: stay.dates,
+    checkOutTime: '待补充',
+    nights: 1,
+    name: stay.name,
+    address: stay.address || '待补充',
+    bookingSite: '爱彼迎',
+    reservationNo: '待补充',
+    guests: '待补充',
+    roomType: '待补充',
+    price: '待补充',
+  }));
+};
+
 const rentalCarRows = (carDetails: string) => {
   const coarseSegments = splitCarSegments(carDetails);
   const detailItems = splitCarSegments(carDetails, true);
@@ -335,15 +371,12 @@ const rentalCarRows = (carDetails: string) => {
 };
 
 export default function DetailView() {
-  const { trip, nodes } = useItineraryStore();
-  const [preview, setPreview] = useState<{ images: string[]; index: number; title: string } | null>(null);
+  const { trip, nodes, lodgings, stays } = useItineraryStore();
 
   const sorted = useMemo(
     () => nodes.filter(isScheduledNode).sort(compareItineraryNodes),
     [nodes],
   );
-
-  const days = useMemo(() => Array.from(new Set(sorted.map((node) => node.day))), [sorted]);
 
   const dates = useMemo(
     () => enumerateDates(trip?.start_date, trip?.end_date),
@@ -353,6 +386,21 @@ export default function DetailView() {
   const transportNodes = useMemo(
     () => sorted.filter((node) => node.type === 'transport'),
     [sorted],
+  );
+
+  const activeStays = useMemo(
+    () => stays.filter((stay) => stay.status !== 'cancelled'),
+    [stays],
+  );
+
+  const lodgingById = useMemo(
+    () => new Map(lodgings.map((lodging) => [lodging.id, lodging])),
+    [lodgings],
+  );
+
+  const accommodationRows = useMemo(
+    () => buildAccommodationRows(lodgings, stays, trip?.accommodations || []),
+    [lodgings, stays, trip?.accommodations],
   );
 
   const tripYear = Number((trip?.start_date || '').slice(0, 4)) || new Date().getFullYear();
@@ -390,9 +438,12 @@ export default function DetailView() {
       const matchedAccommodation = (trip?.accommodations || [])
         .filter((stay) => accommodationMatchesDate(stay, date, tripYear))
         .map((stay) => stay.name);
+      const matchedStayNames = activeStays
+        .filter((stay) => stayCoversNight(stay, date))
+        .map((stay) => lodgingById.get(stay.lodging_id)?.name || '住宿待补充');
       const nightTransport = overnightTransportText(dayNodes, date);
       const overnight = nightTransport
-        || compactList(hotels.length ? hotels : matchedAccommodation, 2);
+        || compactList(hotels.length ? hotels : matchedStayNames.length ? matchedStayNames : matchedAccommodation, 2);
 
       return {
         day,
@@ -403,12 +454,7 @@ export default function DetailView() {
         overnight: date === trip?.end_date && overnight === '待补充' ? '返程 / 不住宿' : overnight,
       };
     });
-  }, [dates, sorted, trip?.accommodations, trip?.end_date, tripYear]);
-
-  const open = (node: ItineraryNode, index: number) => {
-    const images = nodeImages(node);
-    if (images.length) setPreview({ images, index, title: node.title });
-  };
+  }, [activeStays, dates, lodgingById, sorted, trip?.accommodations, trip?.end_date, tripYear]);
 
   if (!trip) {
     return (
@@ -431,153 +477,59 @@ export default function DetailView() {
     }, 500);
   };
 
+  const overviewRows = [
+    ['行程名称', trip.title],
+    ['旅行目的', '旅游'],
+    ['出行日期', `${trip.start_date} 至 ${trip.end_date}`],
+    ['行程天数', `${durationDays || dates.length} 天`],
+    ['出行人数', `${trip.travelers} 人`],
+    ['出发地', trip.origin || '待补充'],
+    ['主要目的地', mainDestination],
+    ['首个申根入境点', firstSchengenEntry],
+  ];
+
+  const carRows = rentalCarRows(trip.car || '');
+
   return (
-    <div className="visa-itinerary">
-      <div className="screen-itinerary w-full space-y-5 print:hidden">
-        {preview && (
-          <ImagePreviewModal
-            images={preview.images}
-            index={preview.index}
-            title={preview.title}
-            onClose={() => setPreview(null)}
-            onIndexChange={(index) => setPreview({ ...preview, index })}
-          />
-        )}
-
-        <section className="visa-cover overflow-hidden rounded-3xl border border-white/60 bg-white/65 shadow-xl backdrop-blur-xl">
-          <div className="flex flex-col gap-5 p-5 sm:p-6 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.22em] text-indigo-600">
-                <FileText className="h-3.5 w-3.5" /> Visa Travel Itinerary
-              </div>
-              <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-950">{trip.title}</h2>
-              <p className="mt-2 max-w-3xl text-xs leading-relaxed text-slate-500">{trip.summary}</p>
-              <div className="mt-4 flex flex-wrap gap-2 text-[11px] font-semibold text-slate-600">
-                <span className="rounded-full bg-slate-100 px-3 py-1.5"><CalendarDays className="mr-1 inline h-3 w-3" />{trip.start_date} 至 {trip.end_date}</span>
-                <span className="rounded-full bg-slate-100 px-3 py-1.5"><Users className="mr-1 inline h-3 w-3" />{trip.travelers} 人 · {trip.origin}出发</span>
-                <span className="rounded-full bg-slate-100 px-3 py-1.5"><Plane className="mr-1 inline h-3 w-3" />共 {days.length} 天</span>
-              </div>
-            </div>
-            <button onClick={printVisaItinerary} className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-xs font-bold text-white shadow-lg shadow-indigo-200 transition hover:bg-indigo-500">
-              <Printer className="h-4 w-4" /> 导出签证行程单 PDF
-            </button>
+    <div className="visa-itinerary mx-auto w-full max-w-6xl space-y-4 pb-8 print:max-w-none print:space-y-0 print:pb-0">
+      <div className="flex flex-col gap-3 rounded-2xl border border-white/70 bg-white/70 p-4 shadow-lg backdrop-blur-xl print:hidden sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2 text-[11px] font-black text-indigo-600">
+            <FileText className="h-4 w-4" /> 正式行程单预览
           </div>
-
-          <div className="grid gap-px border-t border-slate-200 bg-slate-200 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="bg-white/90 p-4">
-              <div className="flex items-center gap-1.5 text-[10px] font-bold text-indigo-600"><Car className="h-3.5 w-3.5" />交通安排</div>
-              <p className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-slate-600">{trip.car}</p>
-            </div>
-            {trip.accommodations.map((stay) => (
-              <div key={stay.name} className="bg-white/90 p-4">
-                <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-700"><Bed className="h-3.5 w-3.5" />{stay.name}</div>
-                <div className="mt-1 text-[9px] font-bold text-indigo-600">{stay.dates}</div>
-                <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-slate-500">{stay.address}</p>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <div className="space-y-4">
-          {days.map((day) => {
-            const dayNodes = sorted.filter((node) => node.day === day);
-            const first = dayNodes[0];
-            const cities = Array.from(new Set(dayNodes.map((node) => node.city).filter(Boolean)));
-            return (
-              <section key={day} className="day-sheet overflow-hidden rounded-2xl border border-white/60 bg-white/70 shadow-lg backdrop-blur-xl">
-                <header className="flex flex-col gap-1 border-b border-slate-200 bg-slate-900 px-4 py-3 text-white sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="rounded-lg bg-indigo-500 px-2.5 py-1 text-xs font-black">DAY {day}</span>
-                    <span className="text-xs font-bold">{formatDisplayDate(first.date)}</span>
-                  </div>
-                  <span className="text-[10px] font-semibold text-slate-300">{cities.join(' · ')}</span>
-                </header>
-
-                <div className="divide-y divide-slate-100">
-                  {dayNodes.map((node) => {
-                    const images = nodeImages(node);
-                    if (node.type === 'transport' && isTicketTransport(node)) {
-                      return (
-                        <article key={node.id} className="bg-slate-50/60 p-3">
-                          <TransportTicket node={node} />
-                        </article>
-                      );
-                    }
-                    return (
-                      <article key={node.id} className="itinerary-row grid gap-3 p-4 sm:grid-cols-[64px_minmax(150px,0.8fr)_minmax(240px,1.4fr)_180px] sm:items-center">
-                        <div className="flex items-center gap-1.5 text-xs font-black text-slate-900 sm:block">
-                          <Clock className="h-3.5 w-3.5 text-indigo-500 sm:mb-1" />
-                          {node.time}
-                        </div>
-
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className={`rounded-full px-2 py-0.5 text-[8px] font-black ${itineraryTypeTone(node).timeline}`}>{itineraryTypeLabel(node)}</span>
-                            <span className="truncate text-sm font-black text-slate-900">{node.title}</span>
-                          </div>
-                          <div className="mt-1 flex items-start gap-1 text-[9px] font-semibold text-slate-400">
-                            <MapPin className="mt-0.5 h-2.5 w-2.5 shrink-0" /> <span className="line-clamp-2">{node.address || node.city || '地点待补充'}</span>
-                          </div>
-                        </div>
-
-                        <p className="text-[11px] leading-relaxed text-slate-600">{node.description || '暂无补充说明'}</p>
-
-                        <div className="image-strip flex min-h-14 items-center gap-1.5">
-                          {images.length ? images.slice(0, 3).map((image, index) => (
-                            <button
-                              key={image}
-                              onClick={() => open(node, index)}
-                              className={`image-thumb group relative overflow-hidden rounded-lg border border-white bg-slate-100 shadow-sm ${index === 0 ? 'h-16 w-20' : 'h-14 w-12'}`}
-                            >
-                              <img src={image} alt={`${node.title} ${index + 1}`} loading="lazy" className="h-full w-full object-cover transition group-hover:scale-105" />
-                              {index === 2 && images.length > 3 && <span className="absolute inset-0 flex items-center justify-center bg-slate-950/65 text-[10px] font-black text-white">+{images.length - 3}</span>}
-                            </button>
-                          )) : (
-                            <div className="flex h-14 w-full items-center justify-center rounded-lg border border-dashed border-slate-200 text-[9px] text-slate-400">
-                              <ImageIcon className="mr-1 h-3.5 w-3.5" /> 暂无图片
-                            </div>
-                          )}
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
-            );
-          })}
+          <p className="mt-1 text-xs font-semibold text-slate-500">
+            内容来自当前旅行计划；如需修改地点、交通或住宿，请进入“编辑行程”。
+          </p>
         </div>
+        <button onClick={printVisaItinerary} className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-slate-950 px-5 py-3 text-xs font-bold text-white shadow-lg shadow-slate-200 transition hover:bg-indigo-600">
+          <Printer className="h-4 w-4" /> 导出 PDF
+        </button>
       </div>
 
-      <div className="hidden print:block">
-        <main className="visa-document mx-auto max-w-[210mm] bg-white p-8 text-slate-950 shadow-xl print:max-w-none print:p-0 print:shadow-none">
-          <header className="border-b-2 border-slate-900 pb-4 print:pb-2">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className="text-[11px] font-black tracking-[0.24em] text-slate-500 print:text-[8px]">
-                  TRAVEL ITINERARY FOR VISA APPLICATION
-                </p>
-                <h1 className="mt-2 text-3xl font-black tracking-tight print:text-xl">
-                  签证申请用旅行行程单
-                </h1>
-              </div>
+      <main className="visa-document mx-auto max-w-[210mm] bg-white p-4 text-slate-950 shadow-2xl shadow-slate-300/70 ring-1 ring-slate-200 sm:p-8 print:max-w-none print:p-0 print:shadow-none print:ring-0">
+        <header className="border-b-2 border-slate-900 pb-4 print:pb-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h1 className="text-2xl font-black tracking-tight sm:text-3xl print:text-xl">
+                签证申请用旅行行程单
+              </h1>
+              <p className="mt-2 text-sm font-bold text-slate-600 print:text-[9px]">
+                {trip.title}
+              </p>
             </div>
-          </header>
+            <div className="text-left text-xs font-bold leading-6 text-slate-600 print:text-[8px] sm:text-right">
+              <div>{trip.start_date} 至 {trip.end_date}</div>
+              <div>{trip.travelers} 人 · {trip.origin || '出发地待补充'}出发</div>
+            </div>
+          </div>
+        </header>
 
           <section className="mt-5 print:mt-3">
             <div className="mb-2 flex items-center gap-2 text-sm font-black print:text-[10px]">
               <CalendarDays className="h-4 w-4 print:h-3 print:w-3" /> 一、行程概况
             </div>
             <div className="grid grid-cols-2 border border-slate-300 text-xs print:text-[8px] md:grid-cols-4">
-              {[
-                ['行程名称', trip.title],
-                ['旅行目的', '旅游'],
-                ['出行日期', `${trip.start_date} 至 ${trip.end_date}`],
-                ['行程天数', `${durationDays || dates.length} 天`],
-                ['出行人数', `${trip.travelers} 人`],
-                ['出发地', trip.origin || '待补充'],
-                ['主要目的地', mainDestination],
-                ['首个申根入境点', firstSchengenEntry],
-              ].map(([label, value]) => (
+              {overviewRows.map(([label, value]) => (
                 <div key={label} className="min-h-16 border-b border-r border-slate-300 p-3 print:min-h-0 print:p-1.5">
                   <div className="text-[10px] font-black text-slate-500 print:text-[7px]">{label}</div>
                   <div className="mt-1 font-bold leading-snug text-slate-950">{value}</div>
@@ -595,10 +547,8 @@ export default function DetailView() {
                 <tr>
                   <th>日期</th>
                   <th>路线</th>
-                  <th>方式</th>
-                  <th>班次</th>
-                  <th>出发时间</th>
-                  <th>到达时间</th>
+                  <th>方式 / 班次</th>
+                  <th>当地时间</th>
                   <th>时长</th>
                 </tr>
               </thead>
@@ -607,15 +557,19 @@ export default function DetailView() {
                   <tr key={node.id}>
                     <td>{formatDisplayDate(node.date)}</td>
                     <td>{routeText(node)}</td>
-                    <td>{node.transport_mode ? transportModeLabels[node.transport_mode] : '交通'}</td>
-                    <td>{node.service_number || '-'}</td>
-                    <td>{endpointTime(node, 'departure')}</td>
-                    <td>{endpointTime(node, 'arrival')}</td>
+                    <td>
+                      <div>{node.transport_mode ? transportModeLabels[node.transport_mode] : '交通'}</div>
+                      <div className="mt-1 text-[10px] text-slate-500">{node.service_number || '-'}</div>
+                    </td>
+                    <td>
+                      <div><span className="font-black">出：</span>{endpointTime(node, 'departure')}</div>
+                      <div className="mt-1"><span className="font-black">到：</span>{endpointTime(node, 'arrival')}</div>
+                    </td>
                     <td>{transportDuration(node)}</td>
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan={7}>暂无主要交通信息</td>
+                    <td colSpan={5}>暂无主要交通信息</td>
                   </tr>
                 )}
               </tbody>
@@ -634,7 +588,7 @@ export default function DetailView() {
                 </tr>
               </thead>
               <tbody>
-                {rentalCarRows(trip.car || '').map(([label, value]) => (
+                {carRows.map(([label, value]) => (
                   <tr key={label}>
                     <td>{label}</td>
                     <td>{value}</td>
@@ -658,12 +612,12 @@ export default function DetailView() {
                 </tr>
               </thead>
               <tbody>
-                {trip.accommodations.length ? trip.accommodations.map((stay) => (
-                  <tr key={`${stay.name}-${stay.dates}`}>
-                    <td>{checkInDateText(stay.dates)}</td>
+                {accommodationRows.length ? accommodationRows.map((stay) => (
+                  <tr key={stay.id}>
+                    <td>{stay.checkInDate} {stay.checkInTime}</td>
                     <td>{stay.name}</td>
-                    <td>{stay.address || '待补充'}</td>
-                    <td>爱彼迎</td>
+                    <td>{stay.address}</td>
+                    <td>{stay.bookingSite}</td>
                   </tr>
                 )) : (
                   <tr>
@@ -709,8 +663,7 @@ export default function DetailView() {
             </table>
           </section>
 
-        </main>
-      </div>
+      </main>
     </div>
   );
 }
