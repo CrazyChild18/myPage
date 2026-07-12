@@ -1846,6 +1846,9 @@ def local_upload_referenced(db, url):
     for row in db.execute("SELECT image_url, image_urls FROM lodgings"):
         if url in image_urls_from_source(row):
             return True
+    for row in db.execute("SELECT avatar_url FROM checklist_members"):
+        if url == str(row["avatar_url"] or "").strip():
+            return True
     return False
 
 
@@ -2126,6 +2129,342 @@ def edge_payload(payload, existing):
         "is_locked": 1 if source.get("isLocked", source.get("is_locked", True)) else 0,
         "display_status": display_status,
     }
+
+
+CHECKLIST_CATEGORIES = {"documents", "bookings", "personal", "shared", "other"}
+CHECKLIST_MEMBER_COLORS = (
+    "#4f46e5",
+    "#0891b2",
+    "#059669",
+    "#ea580c",
+    "#db2777",
+    "#7c3aed",
+    "#0284c7",
+    "#65a30d",
+)
+
+
+def ensure_default_checklist_members(db, slug):
+    if db.execute(
+        "SELECT 1 FROM checklist_members WHERE trip_slug = ? LIMIT 1", (slug,)
+    ).fetchone():
+        return
+    trip = db.execute("SELECT travelers FROM trips WHERE slug = ?", (slug,)).fetchone()
+    if not trip:
+        return
+    count = min(max(int(trip["travelers"] or 1), 1), 12)
+    db.executemany(
+        """INSERT INTO checklist_members
+        (id, trip_slug, name, avatar_color, sort_order)
+        VALUES (:id, :trip_slug, :name, :avatar_color, :sort_order)""",
+        [
+            {
+                "id": f"member-{uuid.uuid4().hex[:12]}",
+                "trip_slug": slug,
+                "name": f"\u6210\u5458{index + 1}",
+                "avatar_color": CHECKLIST_MEMBER_COLORS[index % len(CHECKLIST_MEMBER_COLORS)],
+                "sort_order": index,
+            }
+            for index in range(count)
+        ],
+    )
+
+
+def checklist_member_payload(payload, existing=None):
+    source = {**(dict(existing) if existing else {}), **payload}
+    name = str(source.get("name", "")).strip()
+    if not name:
+        raise ValueError("\u8bf7\u586b\u5199\u6210\u5458\u59d3\u540d")
+    if len(name) > 40:
+        raise ValueError("\u6210\u5458\u59d3\u540d\u4e0d\u80fd\u8d85\u8fc7 40 \u4e2a\u5b57\u7b26")
+    avatar_url = str(source.get("avatar_url", "")).strip()
+    if avatar_url and not (
+        local_upload_filename(avatar_url)
+        or avatar_url.startswith("https://")
+        or avatar_url.startswith("http://")
+    ):
+        raise ValueError("\u5934\u50cf\u5730\u5740\u65e0\u6548")
+    color = str(source.get("avatar_color") or "#4f46e5").strip()
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        color = "#4f46e5"
+    return {
+        "name": name,
+        "avatar_url": avatar_url,
+        "avatar_color": color,
+        "sort_order": int(source.get("sort_order") or 0),
+    }
+
+
+def checklist_item_payload(db, slug, payload, existing=None):
+    source = {**(dict(existing) if existing else {}), **payload}
+    title = str(source.get("title", "")).strip()
+    if not title:
+        raise ValueError("\u8bf7\u586b\u5199\u786e\u8ba4\u4e8b\u9879")
+    if len(title) > 120:
+        raise ValueError("\u4e8b\u9879\u6807\u9898\u4e0d\u80fd\u8d85\u8fc7 120 \u4e2a\u5b57\u7b26")
+    category = str(source.get("category") or "other").strip()
+    if category not in CHECKLIST_CATEGORIES:
+        raise ValueError("\u786e\u8ba4\u4e8b\u9879\u5206\u7c7b\u65e0\u6548")
+    due_date = str(source.get("due_date", "")).strip()
+    if due_date:
+        datetime.date.fromisoformat(due_date)
+    link_url = str(source.get("link_url", "")).strip()
+    if link_url and not re.match(r"^https?://", link_url, re.IGNORECASE):
+        raise ValueError("\u76f8\u5173\u94fe\u63a5\u9700\u8981\u4ee5 http:// \u6216 https:// \u5f00\u5934")
+    member_ids = source.get("member_ids", [])
+    if not isinstance(member_ids, list):
+        raise ValueError("\u6240\u9700\u786e\u8ba4\u6210\u5458\u683c\u5f0f\u65e0\u6548")
+    member_ids = list(dict.fromkeys(str(value).strip() for value in member_ids if str(value).strip()))
+    if not member_ids:
+        raise ValueError("\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u540d\u9700\u8981\u786e\u8ba4\u7684\u6210\u5458")
+    rows = db.execute(
+        "SELECT id FROM checklist_members WHERE trip_slug = ?", (slug,)
+    ).fetchall()
+    valid_ids = {row["id"] for row in rows}
+    if any(member_id not in valid_ids for member_id in member_ids):
+        raise ValueError("\u6240\u9009\u6210\u5458\u4e0d\u5c5e\u4e8e\u5f53\u524d\u65c5\u884c")
+    return {
+        "title": title,
+        "category": category,
+        "notes": str(source.get("notes", "")).strip(),
+        "link_url": link_url,
+        "due_date": due_date,
+        "sort_order": int(source.get("sort_order") or 0),
+        "member_ids": member_ids,
+    }
+
+
+def serialize_checklist(db, slug):
+    members = [
+        dict(row)
+        for row in db.execute(
+            """SELECT id, name, avatar_url, avatar_color, sort_order
+            FROM checklist_members WHERE trip_slug = ? ORDER BY sort_order, created_at, id""",
+            (slug,),
+        )
+    ]
+    assignments = {}
+    for row in db.execute(
+        """SELECT cim.item_id, cim.member_id, cim.confirmed_at
+        FROM checklist_item_members cim
+        JOIN checklist_items ci ON ci.id = cim.item_id
+        WHERE ci.trip_slug = ?""",
+        (slug,),
+    ):
+        assignments.setdefault(row["item_id"], []).append(
+            {
+                "member_id": row["member_id"],
+                "confirmed_at": row["confirmed_at"].isoformat() if row["confirmed_at"] else None,
+            }
+        )
+    items = []
+    for row in db.execute(
+        """SELECT id, title, category, notes, link_url, due_date, sort_order
+        FROM checklist_items WHERE trip_slug = ?
+        ORDER BY category, sort_order, created_at, id""",
+        (slug,),
+    ):
+        item = dict(row)
+        item["members"] = assignments.get(item["id"], [])
+        items.append(item)
+    return {"members": members, "items": items}
+
+
+@app.get("/api/trips/<slug>/checklist")
+def get_checklist(slug):
+    with connection() as db:
+        if not db.execute("SELECT 1 FROM trips WHERE slug = ?", (slug,)).fetchone():
+            return jsonify({"error": "Trip not found"}), 404
+        ensure_default_checklist_members(db, slug)
+        result = serialize_checklist(db, slug)
+    return jsonify(result)
+
+
+@app.post("/api/trips/<slug>/checklist/members")
+def create_checklist_member(slug):
+    payload = request.get_json(force=True)
+    try:
+        item = checklist_member_payload(payload)
+    except (ValueError, TypeError) as error:
+        return jsonify({"error": str(error)}), 400
+    member_id = f"member-{uuid.uuid4().hex[:12]}"
+    with connection() as db:
+        if not db.execute("SELECT 1 FROM trips WHERE slug = ?", (slug,)).fetchone():
+            return jsonify({"error": "Trip not found"}), 404
+        next_order = db.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM checklist_members WHERE trip_slug = ?",
+            (slug,),
+        ).fetchone()["value"]
+        item["sort_order"] = next_order
+        db.execute(
+            """INSERT INTO checklist_members
+            (id, trip_slug, name, avatar_url, avatar_color, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (member_id, slug, *item.values()),
+        )
+    return jsonify({"id": member_id, **item}), 201
+
+
+@app.put("/api/trips/<slug>/checklist/members/<member_id>")
+def update_checklist_member(slug, member_id):
+    payload = request.get_json(force=True)
+    removed_avatar = ""
+    with connection() as db:
+        existing = db.execute(
+            "SELECT * FROM checklist_members WHERE id = ? AND trip_slug = ?",
+            (member_id, slug),
+        ).fetchone()
+        if not existing:
+            return jsonify({"error": "Member not found"}), 404
+        try:
+            item = checklist_member_payload(payload, existing)
+        except (ValueError, TypeError) as error:
+            return jsonify({"error": str(error)}), 400
+        if existing["avatar_url"] != item["avatar_url"]:
+            removed_avatar = existing["avatar_url"]
+        db.execute(
+            """UPDATE checklist_members SET name=?, avatar_url=?, avatar_color=?, sort_order=?
+            WHERE id=? AND trip_slug=?""",
+            (*item.values(), member_id, slug),
+        )
+    if removed_avatar:
+        delete_unreferenced_uploads([removed_avatar])
+    return jsonify({"id": member_id, **item})
+
+
+@app.delete("/api/trips/<slug>/checklist/members/<member_id>")
+def delete_checklist_member(slug, member_id):
+    removed_avatar = ""
+    with connection() as db:
+        existing = db.execute(
+            "SELECT avatar_url FROM checklist_members WHERE id = ? AND trip_slug = ?",
+            (member_id, slug),
+        ).fetchone()
+        if not existing:
+            return jsonify({"error": "Member not found"}), 404
+        removed_avatar = existing["avatar_url"]
+        db.execute(
+            "DELETE FROM checklist_members WHERE id = ? AND trip_slug = ?",
+            (member_id, slug),
+        )
+    if removed_avatar:
+        delete_unreferenced_uploads([removed_avatar])
+    return "", 204
+
+
+@app.post("/api/trips/<slug>/checklist/items")
+def create_checklist_item(slug):
+    payload = request.get_json(force=True)
+    item_id = f"check-{uuid.uuid4().hex[:12]}"
+    with connection() as db:
+        try:
+            item = checklist_item_payload(db, slug, payload)
+        except (ValueError, TypeError) as error:
+            return jsonify({"error": str(error)}), 400
+        next_order = db.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM checklist_items WHERE trip_slug = ?",
+            (slug,),
+        ).fetchone()["value"]
+        member_ids = item.pop("member_ids")
+        item["sort_order"] = next_order
+        db.execute(
+            """INSERT INTO checklist_items
+            (id, trip_slug, title, category, notes, link_url, due_date, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (item_id, slug, *item.values()),
+        )
+        db.executemany(
+            """INSERT INTO checklist_item_members (item_id, member_id)
+            VALUES (:item_id, :member_id)""",
+            [{"item_id": item_id, "member_id": value} for value in member_ids],
+        )
+        result = serialize_checklist(db, slug)
+    return jsonify(result), 201
+
+
+@app.put("/api/trips/<slug>/checklist/items/<item_id>")
+def update_checklist_item(slug, item_id):
+    payload = request.get_json(force=True)
+    with connection() as db:
+        existing = db.execute(
+            "SELECT * FROM checklist_items WHERE id = ? AND trip_slug = ?",
+            (item_id, slug),
+        ).fetchone()
+        if not existing:
+            return jsonify({"error": "Checklist item not found"}), 404
+        try:
+            item = checklist_item_payload(db, slug, payload, existing)
+        except (ValueError, TypeError) as error:
+            return jsonify({"error": str(error)}), 400
+        previous = {
+            row["member_id"]: row["confirmed_at"]
+            for row in db.execute(
+                "SELECT member_id, confirmed_at FROM checklist_item_members WHERE item_id = ?",
+                (item_id,),
+            )
+        }
+        member_ids = item.pop("member_ids")
+        db.execute(
+            """UPDATE checklist_items SET title=?, category=?, notes=?, link_url=?,
+            due_date=?, sort_order=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND trip_slug=?""",
+            (*item.values(), item_id, slug),
+        )
+        db.execute("DELETE FROM checklist_item_members WHERE item_id = ?", (item_id,))
+        db.executemany(
+            """INSERT INTO checklist_item_members (item_id, member_id, confirmed_at)
+            VALUES (:item_id, :member_id, :confirmed_at)""",
+            [
+                {"item_id": item_id, "member_id": value, "confirmed_at": previous.get(value)}
+                for value in member_ids
+            ],
+        )
+        result = serialize_checklist(db, slug)
+    return jsonify(result)
+
+
+@app.delete("/api/trips/<slug>/checklist/items/<item_id>")
+def delete_checklist_item(slug, item_id):
+    with connection() as db:
+        if not db.execute(
+            "SELECT 1 FROM checklist_items WHERE id = ? AND trip_slug = ?",
+            (item_id, slug),
+        ).fetchone():
+            return jsonify({"error": "Checklist item not found"}), 404
+        db.execute("DELETE FROM checklist_items WHERE id = ?", (item_id,))
+    return "", 204
+
+
+@app.put("/api/trips/<slug>/checklist/items/<item_id>/members/<member_id>")
+def confirm_checklist_member(slug, item_id, member_id):
+    payload = request.get_json(force=True)
+    confirmed = bool(payload.get("confirmed"))
+    with connection() as db:
+        row = db.execute(
+            """SELECT 1 FROM checklist_item_members cim
+            JOIN checklist_items ci ON ci.id = cim.item_id
+            WHERE cim.item_id = ? AND cim.member_id = ? AND ci.trip_slug = ?""",
+            (item_id, member_id, slug),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Checklist assignment not found"}), 404
+        db.execute(
+            """UPDATE checklist_item_members
+            SET confirmed_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END
+            WHERE item_id = ? AND member_id = ?""",
+            (1 if confirmed else 0, item_id, member_id),
+        )
+        updated = db.execute(
+            """SELECT member_id, confirmed_at FROM checklist_item_members
+            WHERE item_id = ? AND member_id = ?""",
+            (item_id, member_id),
+        ).fetchone()
+    return jsonify(
+        {
+            "member_id": updated["member_id"],
+            "confirmed_at": updated["confirmed_at"].isoformat() if updated["confirmed_at"] else None,
+        }
+    )
 
 
 @app.post("/api/trips/<slug>/nodes")

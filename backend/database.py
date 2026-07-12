@@ -217,6 +217,45 @@ SCHEMA_STATEMENTS = (
 )
 
 
+CHECKLIST_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS checklist_members (
+        id TEXT PRIMARY KEY,
+        trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        avatar_url TEXT NOT NULL DEFAULT '',
+        avatar_color TEXT NOT NULL DEFAULT '#4f46e5',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS checklist_items (
+        id TEXT PRIMARY KEY,
+        trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'other',
+        notes TEXT NOT NULL DEFAULT '',
+        link_url TEXT NOT NULL DEFAULT '',
+        due_date TEXT NOT NULL DEFAULT '',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS checklist_item_members (
+        item_id TEXT NOT NULL REFERENCES checklist_items(id) ON DELETE CASCADE,
+        member_id TEXT NOT NULL REFERENCES checklist_members(id) ON DELETE CASCADE,
+        confirmed_at TIMESTAMPTZ,
+        PRIMARY KEY (item_id, member_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS checklist_members_trip_idx ON checklist_members (trip_slug, sort_order, id)",
+    "CREATE INDEX IF NOT EXISTS checklist_items_trip_idx ON checklist_items (trip_slug, category, sort_order, id)",
+)
+
+
 def migrate_database(retries=1, retry_delay=2):
     last_error = None
     for attempt in range(retries):
@@ -238,6 +277,13 @@ def migrate_database(retries=1, retry_delay=2):
                     for statement in SCHEMA_STATEMENTS:
                         db.execute(statement)
                     db.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (1,))
+                checklist_applied = db.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = %s", (2,)
+                ).fetchone()
+                if not checklist_applied:
+                    for statement in CHECKLIST_SCHEMA_STATEMENTS:
+                        db.execute(statement)
+                    db.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (2,))
             return
         except psycopg.OperationalError as error:
             last_error = error

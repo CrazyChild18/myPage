@@ -5,6 +5,7 @@ import {
   ClipboardList,
   Cloud,
   Compass,
+  ListChecks,
   Navigation,
   Settings,
 } from 'lucide-react';
@@ -13,16 +14,18 @@ import HomeView from './views/HomeView';
 import { TripSummary } from './types';
 
 const AdminView = lazy(() => import('./views/AdminView'));
+const ChecklistView = lazy(() => import('./views/ChecklistView'));
 const DetailView = lazy(() => import('./views/DetailView'));
 const ExploreView = lazy(() => import('./views/ExploreView'));
 const MapView = lazy(() => import('./components/Map/MapView'));
 
-type TripTab = 'explore' | 'admin' | 'detail';
+type TripTab = 'explore' | 'admin' | 'detail' | 'checklist';
 
 const tabs: Array<{ id: TripTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: 'explore', label: '探索行程', icon: Compass },
   { id: 'detail', label: '行程单', icon: ClipboardList },
   { id: 'admin', label: '编辑行程', icon: Settings },
+  { id: 'checklist', label: '\u786e\u8ba4\u6e05\u5355', icon: ListChecks },
 ];
 
 export default function App() {
@@ -146,6 +149,7 @@ export default function App() {
           >
             {activeTab === 'admin' && <AdminView />}
             {activeTab === 'detail' && <DetailView />}
+            {activeTab === 'checklist' && <ChecklistView />}
           </motion.div>
         </AnimatePresence>
       </main>}

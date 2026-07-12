@@ -141,6 +141,37 @@ export interface Stay {
   notes?: string;
 }
 
+export type ChecklistCategory = 'documents' | 'bookings' | 'personal' | 'shared' | 'other';
+
+export interface ChecklistMember {
+  id: string;
+  name: string;
+  avatar_url: string;
+  avatar_color: string;
+  sort_order: number;
+}
+
+export interface ChecklistAssignment {
+  member_id: string;
+  confirmed_at: string | null;
+}
+
+export interface ChecklistItem {
+  id: string;
+  title: string;
+  category: ChecklistCategory;
+  notes: string;
+  link_url: string;
+  due_date: string;
+  sort_order: number;
+  members: ChecklistAssignment[];
+}
+
+export interface ChecklistResponse {
+  members: ChecklistMember[];
+  items: ChecklistItem[];
+}
+
 export interface Trip {
   slug: string;
   title: string;
