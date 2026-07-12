@@ -10,7 +10,7 @@ import ImagePreviewModal from '../ImagePreviewModal/ImagePreviewModal';
 import { useItineraryStore } from '../../store/useItineraryStore';
 import { ItineraryNode, ItineraryEdge, Lodging, RouteSegment, Stay, TripSummary } from '../../types';
 import { activitySubtypeColors, activitySubtypeOf, isScheduledNode, itineraryTypeLabel } from '../../utils/itinerary';
-import { ChevronDown, Layers3, Plane, Car, Train, Navigation, Compass } from 'lucide-react';
+import { Layers3, Plane, Car, Train, Navigation, Compass, X } from 'lucide-react';
 import { toProviderPoint } from '../../map/coordinates';
 import { amapBrowserKey, amapSecurityCode, googleMapsBrowserKey, mapProviderForTrip, mapProviderLabel } from '../../map/provider';
 import { loadAmap, loadGoogleMaps, resetGoogleMapsLoader } from '../../map/scriptLoaders';
@@ -531,17 +531,6 @@ type RouteStackCandidate = {
   order: number;
 };
 
-type RouteStackMember = RouteStackCandidate & {
-  stackIndex: number;
-  stackSize: number;
-};
-
-type RouteStackGroup = {
-  id: string;
-  anchor: [number, number];
-  members: RouteStackMember[];
-};
-
 const routeLabelHtml = ({ title, subtitle, metric, warning }: RouteLabelData) => `
   <div style="min-width:150px;font-family:Inter,system-ui,sans-serif;padding:2px 0">
     <div style="font-size:11px;font-weight:900;color:#0f172a;line-height:1.25">${title}</div>
@@ -550,39 +539,6 @@ const routeLabelHtml = ({ title, subtitle, metric, warning }: RouteLabelData) =>
     ${warning ? `<div style="margin-top:4px;font-size:9px;font-weight:800;color:#b45309">${warning}</div>` : ''}
   </div>
 `;
-
-const ROUTE_STACK_GRID_DEGREES = 0.0022;
-const ROUTE_STACK_MIN_SHARED_CELLS = 3;
-const ROUTE_STACK_MAX_GROUPS = 14;
-const ROUTE_STACK_MAX_MEMBERS = 5;
-
-const routeCellKey = (lat: number, lng: number) =>
-  `${Math.round(lat / ROUTE_STACK_GRID_DEGREES)}:${Math.round(lng / ROUTE_STACK_GRID_DEGREES)}`;
-
-const routeCellCenter = (key: string): [number, number] => {
-  const [latIndex, lngIndex] = key.split(':').map(Number);
-  return [latIndex * ROUTE_STACK_GRID_DEGREES, lngIndex * ROUTE_STACK_GRID_DEGREES];
-};
-
-const routeCellsForPath = (path: [number, number][]) => {
-  const cells = new Set<string>();
-  for (let index = 1; index < path.length; index += 1) {
-    const start = path[index - 1];
-    const end = path[index];
-    const distance = routeDistanceKm(start[0], start[1], end[0], end[1]);
-    const steps = Math.max(1, Math.min(80, Math.ceil(distance / 0.25)));
-    for (let step = 0; step <= steps; step += 1) {
-      const ratio = step / steps;
-      cells.add(routeCellKey(
-        start[0] + (end[0] - start[0]) * ratio,
-        start[1] + (end[1] - start[1]) * ratio,
-      ));
-    }
-  }
-  return cells;
-};
-
-const pairKey = (left: string, right: string) => left < right ? `${left}|||${right}` : `${right}|||${left}`;
 
 const edgeRouteStackCandidate = (
   edge: ItineraryEdge,
@@ -633,176 +589,68 @@ const lodgingRouteStackCandidate = (
   };
 };
 
-const buildRouteStackGroups = (candidates: RouteStackCandidate[]): RouteStackGroup[] => {
-  const routes = candidates.filter((candidate) => candidate.path.length >= 2);
-  if (routes.length < 2) return [];
+const ROUTE_STACK_MAX_MEMBERS = 5;
 
-  const parent = new Map(routes.map((route) => [route.visualId, route.visualId]));
-  const find = (id: string): string => {
-    const next = parent.get(id) || id;
-    if (next === id) return id;
-    const root = find(next);
-    parent.set(id, root);
-    return root;
-  };
-  const union = (left: string, right: string) => {
-    const leftRoot = find(left);
-    const rightRoot = find(right);
-    if (leftRoot !== rightRoot) parent.set(rightRoot, leftRoot);
-  };
+const ROUTE_PICK_RADIUS_KM = 0.12;
 
-  const cellRoutes = new Map<string, Set<string>>();
-  routes.forEach((route) => {
-    routeCellsForPath(route.path).forEach((cell) => {
-      const current = cellRoutes.get(cell) || new Set<string>();
-      current.add(route.visualId);
-      cellRoutes.set(cell, current);
-    });
-  });
-
-  const pairScores = new Map<string, number>();
-  cellRoutes.forEach((ids) => {
-    if (ids.size < 2) return;
-    const routeIds = [...ids].sort();
-    for (let left = 0; left < routeIds.length; left += 1) {
-      for (let right = left + 1; right < routeIds.length; right += 1) {
-        const key = pairKey(routeIds[left], routeIds[right]);
-        pairScores.set(key, (pairScores.get(key) || 0) + 1);
-      }
-    }
-  });
-
-  pairScores.forEach((score, key) => {
-    if (score < ROUTE_STACK_MIN_SHARED_CELLS) return;
-    const [left, right] = key.split('|||');
-    union(left, right);
-  });
-
-  const groupMembers = new Map<string, RouteStackCandidate[]>();
-  routes.forEach((route) => {
-    const root = find(route.visualId);
-    const current = groupMembers.get(root) || [];
-    current.push(route);
-    groupMembers.set(root, current);
-  });
-
-  const groups: RouteStackGroup[] = [];
-  groupMembers.forEach((members, root) => {
-    if (members.length < 2) return;
-    const ids = new Set(members.map((member) => member.visualId));
-    let latSum = 0;
-    let lngSum = 0;
-    let overlapCount = 0;
-    cellRoutes.forEach((cellIds, cell) => {
-      const sharedCount = [...cellIds].filter((id) => ids.has(id)).length;
-      if (sharedCount < 2) return;
-      const [lat, lng] = routeCellCenter(cell);
-      latSum += lat;
-      lngSum += lng;
-      overlapCount += 1;
-    });
-    if (!overlapCount) return;
-    const sortedMembers = [...members]
-      .sort((left, right) => left.order - right.order)
-      .slice(0, ROUTE_STACK_MAX_MEMBERS);
-    groups.push({
-      id: root,
-      anchor: [latSum / overlapCount, lngSum / overlapCount],
-      members: sortedMembers.map((member, index) => ({
-        ...member,
-        stackIndex: index,
-        stackSize: sortedMembers.length,
-      })),
-    });
-  });
-
-  return groups
-    .sort((left, right) => right.members.length - left.members.length)
-    .slice(0, ROUTE_STACK_MAX_GROUPS);
+const routeDistanceToPointKm = (point: [number, number], path: [number, number][]) => {
+  if (path.length < 2) return Number.POSITIVE_INFINITY;
+  const latScale = 111.32;
+  const lngScale = Math.max(0.01, Math.cos(point[0] * Math.PI / 180)) * 111.32;
+  let minimum = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < path.length; index += 1) {
+    const startX = (path[index - 1][1] - point[1]) * lngScale;
+    const startY = (path[index - 1][0] - point[0]) * latScale;
+    const endX = (path[index][1] - point[1]) * lngScale;
+    const endY = (path[index][0] - point[0]) * latScale;
+    const deltaX = endX - startX;
+    const deltaY = endY - startY;
+    const lengthSquared = deltaX * deltaX + deltaY * deltaY;
+    const ratio = lengthSquared > 0
+      ? Math.max(0, Math.min(1, -(startX * deltaX + startY * deltaY) / lengthSquared))
+      : 0;
+    const nearestX = startX + deltaX * ratio;
+    const nearestY = startY + deltaY * ratio;
+    minimum = Math.min(minimum, Math.hypot(nearestX, nearestY));
+  }
+  return minimum;
 };
 
-type RouteOverlapLegendProps = {
-  groups: RouteStackGroup[];
+type RouteContextPanelProps = {
+  members: RouteStackCandidate[];
   activeEdgeId: string | null;
-  hoveredEdgeId: string | null;
   setActiveEdgeId: (id: string | null) => void;
   setHoveredEdgeId: (id: string | null) => void;
+  onClose: () => void;
 };
 
-const RouteOverlapLegend: React.FC<RouteOverlapLegendProps> = ({
-  groups,
+const RouteContextPanel: React.FC<RouteContextPanelProps> = ({
+  members,
   activeEdgeId,
-  hoveredEdgeId,
   setActiveEdgeId,
   setHoveredEdgeId,
+  onClose,
 }) => {
-  const [expanded, setExpanded] = useState(false);
-  if (!groups.length) return null;
-
-  const routeCount = groups.reduce((sum, group) => sum + group.members.length, 0);
-
-  if (!expanded) {
-    return (
-      <button
-        type="button"
-        onClick={() => setExpanded(true)}
-        className="pointer-events-auto absolute bottom-[calc(min(32dvh,16rem)+1rem)] left-1/2 z-[10000] flex min-h-10 -translate-x-1/2 items-center gap-2 rounded-full border border-white/60 bg-white/48 px-3.5 text-[10px] font-black text-slate-800 shadow-lg backdrop-blur-2xl backdrop-saturate-150 transition hover:bg-white/72 sm:bottom-5 sm:left-auto sm:right-5 sm:translate-x-0"
-        aria-label={`展开重叠路线图例，共 ${routeCount} 条路线`}
-      >
-        <Layers3 className="h-4 w-4 text-indigo-600" />
-        重叠路线 · {routeCount}
-      </button>
-    );
-  }
-
+  if (!members.length) return null;
+  const stacked = members.length > 1;
   return (
-    <div className="pointer-events-auto absolute bottom-[calc(min(32dvh,16rem)+1rem)] left-1/2 z-[10000] w-[min(20rem,calc(100%-2rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-white/55 bg-white/48 shadow-[0_18px_46px_rgba(15,23,42,0.22)] backdrop-blur-2xl backdrop-saturate-150 sm:bottom-5 sm:left-auto sm:right-5 sm:translate-x-0">
-      <div className="flex items-center justify-between border-b border-white/45 px-3.5 py-2.5">
-        <div>
-          <div className="text-[11px] font-black text-slate-950">重叠路线</div>
-          <div className="mt-0.5 text-[9px] font-bold text-slate-500">悬浮高亮，点击锁定</div>
+    <div className="pointer-events-auto absolute bottom-[calc(min(32dvh,16rem)+1rem)] left-1/2 z-[10000] w-[min(21rem,calc(100%-1rem))] -translate-x-1/2 overflow-hidden rounded-xl border border-white/70 bg-white/90 shadow-[0_16px_42px_rgba(15,23,42,0.22)] backdrop-blur-xl sm:bottom-5 sm:left-auto sm:right-5 sm:translate-x-0" aria-live="polite">
+      <div className="flex items-center justify-between border-b border-slate-200/70 px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-indigo-50 text-indigo-600"><Layers3 className="h-4 w-4" /></span>
+          <div className="min-w-0"><div className="text-[11px] font-black text-slate-950">{stacked ? `\u6b64\u5904\u6709 ${members.length} \u6761\u8def\u7ebf` : '\u8def\u7ebf\u8be6\u60c5'}</div><div className="mt-0.5 text-[9px] font-bold text-slate-500">{stacked ? '\u9009\u62e9\u9700\u8981\u67e5\u770b\u7684\u8def\u7ebf' : '\u65f6\u95f4\u4e0e\u8def\u7a0b\u4fe1\u606f'}</div></div>
         </div>
-        <button type="button" onClick={() => setExpanded(false)} className="flex h-9 w-9 items-center justify-center rounded-full border border-white/60 bg-white/45 text-slate-600 shadow-sm backdrop-blur-md" aria-label="收起重叠路线图例">
-          <ChevronDown className="h-4 w-4" />
-        </button>
+        <button type="button" onClick={onClose} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-500 hover:bg-slate-100" aria-label={'\u5173\u95ed\u8def\u7ebf\u9762\u677f'}><X className="h-4 w-4" /></button>
       </div>
-      <div className="max-h-[min(38dvh,12rem)] space-y-2 overflow-y-auto p-2.5">
-        {groups.map((group) => (
-          <div key={group.id} className="rounded-xl border border-white/45 bg-white/34 p-1.5 shadow-sm backdrop-blur-lg">
-            <div className="px-1.5 pb-1 text-[9px] font-black text-slate-500">同路段</div>
-            {group.members.map((member) => {
-              const active = activeEdgeId === member.stateId || hoveredEdgeId === member.stateId;
-              return (
-                <button
-                  key={member.stateId}
-                  type="button"
-                  onMouseEnter={() => setHoveredEdgeId(member.stateId)}
-                  onMouseLeave={() => setHoveredEdgeId(null)}
-                  onFocus={() => setHoveredEdgeId(member.stateId)}
-                  onBlur={() => setHoveredEdgeId(null)}
-                  onClick={() => setActiveEdgeId(member.stateId)}
-                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition ${
-                    active ? 'bg-white/82 shadow-sm ring-1 ring-indigo-200/80' : 'hover:bg-white/56'
-                  }`}
-                >
-                  <span
-                    className="h-1.5 w-7 shrink-0 rounded-full shadow-[0_0_0_2px_rgba(255,255,255,.9)]"
-                    style={{ background: member.color }}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[11px] font-black text-slate-900">{member.label.title}</span>
-                    <span className="mt-0.5 block truncate text-[9px] font-bold text-slate-500">{member.label.subtitle}</span>
-                  </span>
-                  {member.label.metric && (
-                    <span className="shrink-0 rounded-full bg-white/72 px-2 py-1 text-[9px] font-black text-rose-600 shadow-sm backdrop-blur-md">
-                      {member.label.metric}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        ))}
+      <div className="max-h-[min(36dvh,13rem)] space-y-1.5 overflow-y-auto p-2">
+        {members.map((member) => {
+          const active = activeEdgeId === member.stateId;
+          return <button key={member.stateId} type="button" onMouseEnter={() => setHoveredEdgeId(member.stateId)} onMouseLeave={() => setHoveredEdgeId(null)} onFocus={() => setHoveredEdgeId(member.stateId)} onBlur={() => setHoveredEdgeId(null)} onClick={() => setActiveEdgeId(member.stateId)} className={`flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2.5 text-left transition ${active ? 'border-indigo-200 bg-indigo-50 shadow-sm' : 'border-transparent hover:border-slate-200 hover:bg-slate-50'}`}>
+            <span className="h-1.5 w-8 shrink-0 rounded-full shadow-[0_0_0_2px_white]" style={{ background: member.color }} />
+            <span className="min-w-0 flex-1"><span className="block text-[11px] font-black text-slate-900">{member.label.title}</span><span className="mt-0.5 block truncate text-[9px] font-bold text-slate-500">{member.label.subtitle}</span>{member.label.warning && <span className="mt-1 block text-[9px] font-bold text-amber-600">{member.label.warning}</span>}</span>
+            <span className="max-w-28 shrink-0 text-right text-[9px] font-black leading-4 text-rose-600">{member.label.metric || '\u8def\u7a0b\u5f85\u8865\u5145'}</span>
+          </button>;
+        })}
       </div>
     </div>
   );
@@ -1046,6 +894,7 @@ type ProviderMapCanvasProps = {
   setActiveNodeId: (id: string | null) => void;
   setActiveEdgeId: (id: string | null) => void;
   setHoveredEdgeId: (id: string | null) => void;
+  onRouteClick: (id: string, point?: [number, number]) => void;
   onSelectHomeTrip?: (slug: string) => void;
   onOpenHomeTrip?: (slug: string) => void;
 };
@@ -1247,6 +1096,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   setActiveNodeId,
   setActiveEdgeId,
   setHoveredEdgeId,
+  onRouteClick,
   onSelectHomeTrip,
   onOpenHomeTrip,
 }) => {
@@ -1541,7 +1391,8 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               lineZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
               haloZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 8,
             });
-            line.addListener('click', () => setActiveEdgeId(edge.id));
+            line.addListener('click', (event: any) => onRouteClick(edge.id, event.latLng ? [event.latLng.lat(), event.latLng.lng()] : undefined));
+            halo.addListener('click', (event: any) => onRouteClick(edge.id, event.latLng ? [event.latLng.lat(), event.latLng.lng()] : undefined));
             line.addListener('mouseover', () => {
               setHoveredEdgeId(edge.id);
               clearRouteHover();
@@ -1610,7 +1461,8 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
               lineZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
               haloZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 7,
             });
-            line.addListener('click', () => setActiveEdgeId(routeVisualId));
+            line.addListener('click', (event: any) => onRouteClick(routeVisualId, event.latLng ? [event.latLng.lat(), event.latLng.lng()] : undefined));
+            halo.addListener('click', (event: any) => onRouteClick(routeVisualId, event.latLng ? [event.latLng.lat(), event.latLng.lng()] : undefined));
             line.addListener('mouseover', () => {
               setHoveredEdgeId(routeVisualId);
               clearRouteHover();
@@ -1758,6 +1610,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   setActiveNodeId,
   setActiveEdgeId,
   setHoveredEdgeId,
+  onRouteClick,
   onSelectHomeTrip,
   onOpenHomeTrip,
 }) => {
@@ -2023,7 +1876,8 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               lineZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 2,
               haloZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 8,
             });
-            line.on('click', () => setActiveEdgeId(edge.id));
+            line.on('click', (event: any) => onRouteClick(edge.id, event.lnglat ? [event.lnglat.getLat(), event.lnglat.getLng()] : undefined));
+            halo.on('click', (event: any) => onRouteClick(edge.id, event.lnglat ? [event.lnglat.getLat(), event.lnglat.getLng()] : undefined));
             line.on('mouseover', () => {
               setHoveredEdgeId(edge.id);
               clearRouteHover();
@@ -2096,7 +1950,8 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
               lineZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX : ROUTE_BASE_Z_INDEX - 3,
               haloZIndex: selected || isHovered ? ROUTE_HOVER_Z_INDEX - 1 : 7,
             });
-            line.on('click', () => setActiveEdgeId(routeVisualId));
+            line.on('click', (event: any) => onRouteClick(routeVisualId, event.lnglat ? [event.lnglat.getLat(), event.lnglat.getLng()] : undefined));
+            halo.on('click', (event: any) => onRouteClick(routeVisualId, event.lnglat ? [event.lnglat.getLat(), event.lnglat.getLng()] : undefined));
             line.on('mouseover', () => {
               setHoveredEdgeId(routeVisualId);
               clearRouteHover();
@@ -2230,6 +2085,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
   } = useItineraryStore();
 
   const [preview, setPreview] = useState<PreviewState>(null);
+  const [routePanelMembers, setRoutePanelMembers] = useState<RouteStackCandidate[] | null>(null);
   const routeSegmentLookup = new Map(routeSegments.map((segment) => [routeSegmentKey(segment.linkType, segment.linkId), segment]));
   const lodgingById = new Map(lodgings.map((lodging) => [lodging.id, lodging]));
 
@@ -2275,7 +2131,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     ? [...visibleEdges].sort((left, right) => Number(left.id === focusedEdgeId) - Number(right.id === focusedEdgeId))
     : visibleEdges;
 
-  const routeStackGroups = buildRouteStackGroups([
+  const routeStackCandidates = [
     ...visibleEdges
       .map((edge, index) => edgeRouteStackCandidate(
         edge,
@@ -2290,7 +2146,18 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
         visibleEdges.length + index,
       ))
       .filter((candidate): candidate is RouteStackCandidate => Boolean(candidate)),
-  ]);
+  ];
+  const onRouteClick = (stateId: string, point?: [number, number]) => {
+    const candidate = routeStackCandidates.find((route) => route.stateId === stateId);
+    if (!candidate) return;
+    const nearby = point
+      ? routeStackCandidates.filter((route) => routeDistanceToPointKm(point, route.path) <= ROUTE_PICK_RADIUS_KM)
+      : [];
+    const members = [candidate, ...nearby.filter((route) => route.stateId !== stateId)].slice(0, ROUTE_STACK_MAX_MEMBERS);
+    setActiveEdgeId(stateId);
+    setRoutePanelMembers(members);
+  };
+  useEffect(() => setRoutePanelMembers(null), [activeDay, trip?.slug]);
   const fitPoints: [number, number][] = [
     ...visibleNodes.map((node) => [node.lat, node.lng] as [number, number]),
     ...visibleLodgings.map(({ lodging }) => [lodging.lat, lodging.lng] as [number, number]),
@@ -2356,6 +2223,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     setActiveNodeId,
     setActiveEdgeId,
     setHoveredEdgeId,
+    onRouteClick,
     onSelectHomeTrip,
     onOpenHomeTrip,
   };
@@ -2374,13 +2242,13 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
           />
         )}
         {activeProvider === 'google' ? <GoogleMapCanvas {...sdkMapProps} /> : <AmapCanvas {...sdkMapProps} />}
-        {mode === 'trip' && (
-          <RouteOverlapLegend
-            groups={routeStackGroups}
+        {mode === 'trip' && routePanelMembers && (
+          <RouteContextPanel
+            members={routePanelMembers}
             activeEdgeId={activeEdgeId}
-            hoveredEdgeId={hoveredEdgeId}
             setActiveEdgeId={setActiveEdgeId}
             setHoveredEdgeId={setHoveredEdgeId}
+            onClose={() => { setRoutePanelMembers(null); setHoveredEdgeId(null); }}
           />
         )}
       </div>
@@ -2398,13 +2266,13 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
           onIndexChange={(index) => setPreview({ ...preview, index })}
         />
       )}
-      {mode === 'trip' && (
-        <RouteOverlapLegend
-          groups={routeStackGroups}
+      {mode === 'trip' && routePanelMembers && (
+        <RouteContextPanel
+          members={routePanelMembers}
           activeEdgeId={activeEdgeId}
-          hoveredEdgeId={hoveredEdgeId}
           setActiveEdgeId={setActiveEdgeId}
           setHoveredEdgeId={setHoveredEdgeId}
+          onClose={() => { setRoutePanelMembers(null); setHoveredEdgeId(null); }}
         />
       )}
       <ProviderMissingFallback provider={activeProvider}>
@@ -2492,7 +2360,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
                   lineCap: 'round'
                 }}
                 eventHandlers={{
-                  click: () => setActiveEdgeId(edge.id),
+                  click: (event) => onRouteClick(edge.id, [event.latlng.lat, event.latlng.lng]),
                   mouseover: () => setHoveredEdgeId(edge.id),
                   mouseout: () => setHoveredEdgeId(null)
                 }}
@@ -2502,6 +2370,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
               <Polyline
                 positions={data.positions}
                 pathOptions={routeHaloStyle(Number(edgeStyle.weight || 3) + 4, 0.88)}
+                interactive={false}
               />
               
               {/* Inner visible line */}
@@ -2509,7 +2378,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
                 positions={data.positions}
                 pathOptions={edgeStyle}
                 eventHandlers={{
-                  click: () => setActiveEdgeId(edge.id),
+                  click: (event) => onRouteClick(edge.id, [event.latlng.lat, event.latlng.lng]),
                   mouseover: () => setHoveredEdgeId(edge.id),
                   mouseout: () => setHoveredEdgeId(null)
                 }}
@@ -2547,7 +2416,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
                 positions={positions}
                 pathOptions={{ color: 'transparent', weight: 15, lineCap: 'round' }}
                 eventHandlers={{
-                  click: () => setActiveEdgeId(routeStateId),
+                  click: (event) => onRouteClick(routeStateId, [event.latlng.lat, event.latlng.lng]),
                   mouseover: () => setHoveredEdgeId(routeStateId),
                   mouseout: () => setHoveredEdgeId(null),
                 }}
@@ -2555,12 +2424,13 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
               <Polyline
                 positions={positions}
                 pathOptions={routeHaloStyle(Number(style.weight || 3) + 4, 0.86)}
+                interactive={false}
               />
               <Polyline
                 positions={positions}
                 pathOptions={style}
                 eventHandlers={{
-                  click: () => setActiveEdgeId(routeStateId),
+                  click: (event) => onRouteClick(routeStateId, [event.latlng.lat, event.latlng.lng]),
                   mouseover: () => setHoveredEdgeId(routeStateId),
                   mouseout: () => setHoveredEdgeId(null),
                 }}
