@@ -9,8 +9,7 @@ import { useItineraryStore } from '../store/useItineraryStore';
 import { ChecklistCategory, ChecklistItem, ChecklistMember, ChecklistResponse } from '../types';
 
 const text = {
-  title: '\u884c\u524d\u786e\u8ba4\u77e9\u9635',
-  subtitle: '\u591a\u4eba\u5206\u5de5\u786e\u8ba4\u884c\u524d\u4e8b\u9879\uff0c\u6bcf\u4e2a\u4eba\u7684\u72b6\u6001\u90fd\u6e05\u695a\u53ef\u89c1\u3002',
+  title: '\u884c\u524d\u786e\u8ba4\u6e05\u5355',
   addItem: '\u65b0\u589e\u4e8b\u9879',
   manageMembers: '\u7ba1\u7406\u6210\u5458',
   all: '\u5168\u90e8',
@@ -285,7 +284,6 @@ export default function ChecklistView() {
             <div className="grid h-10 w-10 place-items-center rounded-lg bg-indigo-600 text-white shadow-sm"><FileCheck2 className="h-5 w-5" /></div>
             <div>
               <h2 className="text-xl font-black text-slate-950 sm:text-2xl">{text.title}</h2>
-              <p className="mt-1 text-xs font-medium text-slate-500">{text.subtitle}</p>
             </div>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-5">
@@ -305,14 +303,14 @@ export default function ChecklistView() {
       </section>
       {error && <div className="mb-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700"><span>{error}</span><button onClick={() => setError('')} aria-label="close"><X className="h-4 w-4" /></button></div>}
       <div className="mb-3 flex flex-col justify-between gap-3 sm:flex-row">
-        <div className="flex overflow-x-auto rounded-lg border border-slate-200 bg-white p-1">
-          {filters.map(([id, label, count]) => <button key={id} onClick={() => setFilter(id)} className={'whitespace-nowrap rounded-md px-3 py-2 text-[11px] font-black ' + (filter === id ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50')}>{label}<span className="ml-1.5 text-[10px] opacity-70">{count}</span></button>)}
+        <div className="grid grid-cols-4 rounded-lg border border-slate-200 bg-white p-1 sm:flex sm:overflow-x-auto">
+          {filters.map(([id, label, count]) => <button key={id} onClick={() => setFilter(id)} className={'whitespace-nowrap rounded-md px-1.5 py-2 text-[10px] font-black sm:px-3 sm:text-[11px] ' + (filter === id ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50')}>{label}<span className="ml-1 text-[9px] opacity-70 sm:ml-1.5 sm:text-[10px]">{count}</span></button>)}
         </div>
         <label className="relative block min-w-0 sm:w-72"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text.search} className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs font-semibold outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" /></label>
       </div>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_260px]">
-        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          {grouped.length ? <div className="overflow-x-auto"><table className="w-full min-w-[860px] table-fixed text-left">
+        <div className="min-w-0 sm:overflow-hidden sm:rounded-lg sm:border sm:border-slate-200 sm:bg-white sm:shadow-sm">
+          {grouped.length ? <><div className="space-y-4 sm:hidden">{grouped.map((group) => { const Icon = group.icon; return <section key={group.id}><div className="mb-2 flex items-center gap-2 px-1 text-xs font-black text-slate-800"><Icon className="h-4 w-4 text-indigo-500" />{group.label}<span className="text-[10px] text-slate-400">{group.items.length}</span></div><div className="space-y-2">{group.items.map((item) => <MobileChecklistCard key={item.id} item={item} members={data.members} onToggle={toggle} onEdit={editItem} onDelete={deleteItem} />)}</div></section>; })}</div><div className="hidden overflow-x-auto sm:block"><table className="w-full min-w-[860px] table-fixed text-left">
             <thead className="border-b border-slate-200 bg-slate-50 text-[10px] font-black text-slate-500"><tr>
               <th className="w-[36%] px-4 py-3">{'\u4e8b\u9879'}</th><th className="w-24 px-3 py-3">{'\u622a\u6b62\u65e5\u671f'}</th>
               {data.members.map((member) => <th key={member.id} className="w-20 px-1 py-2 text-center"><Avatar member={member} size="sm" /><div className="mt-1 truncate">{member.name}</div></th>)}
@@ -327,7 +325,7 @@ export default function ChecklistView() {
                 ];
               })}
             </tbody>
-          </table></div> : <EmptyState onAdd={() => setItemDraft({ ...emptyItem(), member_ids: data.members.map((member) => member.id) })} />}
+          </table></div></> : <EmptyState onAdd={() => setItemDraft({ ...emptyItem(), member_ids: data.members.map((member) => member.id) })} />}
         </div>
         <MemberSummary members={data.members} items={data.items} onManage={() => setMembersOpen(true)} onAdd={() => { setMembersOpen(true); openMember(); }} />
       </div>
@@ -336,6 +334,40 @@ export default function ChecklistView() {
     </div>
   );
 }
+function MobileChecklistCard({ item, members, onToggle, onEdit, onDelete }: {
+  item: ChecklistItem; members: ChecklistMember[];
+  key?: string;
+  onToggle: (itemId: string, memberId: string, confirmed: boolean) => Promise<void>;
+  onEdit: (item: ChecklistItem) => void; onDelete: (item: ChecklistItem) => Promise<void>;
+}) {
+  const complete = isComplete(item);
+  const confirmedCount = item.members.filter((entry) => entry.confirmed_at).length;
+  return <article className={'rounded-lg border bg-white p-3 shadow-sm ' + (complete ? 'border-emerald-200' : 'border-slate-200')}>
+    <div className="flex items-start gap-2.5">
+      <span className={'mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border ' + (complete ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-slate-300 bg-white')}>{complete && <Check className="h-3 w-3" strokeWidth={3} />}</span>
+      <div className="min-w-0 flex-1">
+        <h3 className={'text-[13px] font-black leading-5 ' + (complete ? 'text-slate-500' : 'text-slate-900')}>{item.title}</h3>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-bold">
+          <span className={isSoon(item) ? 'text-orange-600' : 'text-slate-400'}>{formatDate(item.due_date)}</span>
+          <span className={complete ? 'text-emerald-600' : 'text-orange-600'}>{confirmedCount}/{item.members.length} {complete ? '\u5df2\u786e\u8ba4' : '\u5f85\u786e\u8ba4'}</span>
+          {item.link_url && <a href={item.link_url} target="_blank" rel="noreferrer" className="text-indigo-600"><ExternalLink className="mr-0.5 inline h-3 w-3" />{'\u94fe\u63a5'}</a>}
+        </div>
+        {item.notes && <p className="mt-1.5 text-[11px] leading-4 text-slate-500">{item.notes}</p>}
+      </div>
+      <div className="flex shrink-0">
+        <button onClick={() => onEdit(item)} title={'\u7f16\u8f91'} className="grid h-8 w-8 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-indigo-600"><Pencil className="h-3.5 w-3.5" /></button>
+        <button onClick={() => void onDelete(item)} title={'\u5220\u9664'} className="grid h-8 w-8 place-items-center rounded-md text-slate-400 hover:bg-red-50 hover:text-red-600"><Trash2 className="h-3.5 w-3.5" /></button>
+      </div>
+    </div>
+    <div className="mt-3 grid grid-cols-2 gap-2">{members.map((member) => {
+      const assignment = item.members.find((entry) => entry.member_id === member.id);
+      if (!assignment) return null;
+      const confirmed = Boolean(assignment.confirmed_at);
+      return <button key={member.id} aria-pressed={confirmed} onClick={() => void onToggle(item.id, member.id, !confirmed)} className={'flex min-w-0 items-center gap-2 rounded-lg border px-2 py-2 text-left transition ' + (confirmed ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50 hover:border-indigo-300')}><Avatar member={member} size="sm" confirmed={confirmed} /><span className="min-w-0 flex-1 truncate text-[11px] font-black text-slate-700">{member.name}</span><span className={'shrink-0 text-[9px] font-black ' + (confirmed ? 'text-emerald-600' : 'text-slate-400')}>{confirmed ? '\u5df2\u786e\u8ba4' : '\u5f85\u786e\u8ba4'}</span></button>;
+    })}</div>
+  </article>;
+}
+
 function ChecklistRow({ item, members, onToggle, onEdit, onDelete }: {
   item: ChecklistItem; members: ChecklistMember[];
   key?: string;
