@@ -1,4 +1,24 @@
 services:
+  postgres:
+    image: postgres:18.4-alpine3.24
+    container_name: voyageplanner-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-voyageplanner}
+      POSTGRES_USER: ${POSTGRES_USER:-voyageplanner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    shm_size: 128mb
+    volumes:
+      - "${POSTGRES_DATA_DIR:-voyageplanner-postgres-data}:/var/lib/postgresql"
+    networks:
+      - shared-db
+
   voyageplanner:
     build:
       context: .
@@ -9,20 +29,33 @@ services:
         VITE_GOOGLE_MAP_ID: ${VITE_GOOGLE_MAP_ID:-}
     container_name: voyageplanner
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
     ports:
       - "0.0.0.0:${APP_PORT:-25565}:8080"
     environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-voyageplanner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-voyageplanner}
+      UPLOAD_DIR: /data/uploads
       AMAP_WEB_SERVICE_KEY: ${AMAP_WEB_SERVICE_KEY:-}
       GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
       OVERSEAS_GEOCODE_PROVIDER: ${OVERSEAS_GEOCODE_PROVIDER:-google}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
-      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,postgres}
       http_proxy: ${HTTP_PROXY:-}
       https_proxy: ${HTTPS_PROXY:-}
-      no_proxy: ${NO_PROXY:-localhost,127.0.0.1}
+      no_proxy: ${NO_PROXY:-localhost,127.0.0.1,postgres}
     volumes:
-      - voyageplanner-data:/data
+      - "${VOYAGEPLANNER_DATA_DIR:-voyageplanner-data}:/data"
+    networks:
+      - shared-db
 
 volumes:
+  voyageplanner-postgres-data:
   voyageplanner-data:
+
+networks:
+  shared-db:
+    name: voyageplanner-shared

@@ -5,7 +5,7 @@ const VARIANT_PATTERN = /-1280\.webp(?:\?.*)?$/i;
 export const responsiveImageProps = (
   url: string,
   sizes = '(max-width: 640px) 100vw, 640px',
-): Pick<ImgHTMLAttributes<HTMLImageElement>, 'srcSet' | 'sizes' | 'loading' | 'decoding'> => {
+): Partial<Pick<ImgHTMLAttributes<HTMLImageElement>, 'srcSet' | 'sizes' | 'loading' | 'decoding'>> => {
   const shared = { loading: 'lazy' as const, decoding: 'async' as const };
   if (!VARIANT_PATTERN.test(url)) return shared;
   const cleanUrl = url.replace(/\?.*$/, '');

@@ -3,7 +3,6 @@ import json
 import math
 import os
 import re
-import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -17,6 +16,7 @@ from PIL import Image, ImageOps
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
+from backend.database import connection, migrate_database
 from backend.seed_data import EDGES, NODES, TRIP
 
 
@@ -33,8 +33,7 @@ def project_path(value, default):
 
 
 DIST_DIR = PROJECT_DIR / "dist"
-DATABASE = project_path(os.environ.get("DATABASE_PATH"), BASE_DIR / "voyageplanner.db")
-UPLOAD_DIR = project_path(os.environ.get("UPLOAD_DIR"), DATABASE.parent / "uploads")
+UPLOAD_DIR = project_path(os.environ.get("UPLOAD_DIR"), BASE_DIR / "uploads")
 AMAP_WEB_SERVICE_KEY = os.environ.get("AMAP_WEB_SERVICE_KEY", "")
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY") or os.environ.get("GOOGLE_PLACES_API_KEY", "")
 OVERSEAS_GEOCODE_PROVIDER = os.environ.get("OVERSEAS_GEOCODE_PROVIDER", "nominatim").lower()
@@ -99,29 +98,6 @@ def image_too_large(_error):
     return jsonify({"error": "图片不能超过 10 MB"}), 413
 
 
-def connection():
-    db = sqlite3.connect(DATABASE)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys = ON")
-    return db
-
-
-def table_columns(db, table):
-    return {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
-
-
-def add_column_if_missing(db, table, column, definition):
-    if column in table_columns(db, table):
-        return False
-    try:
-        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-        return True
-    except sqlite3.OperationalError as error:
-        if "duplicate column name" in str(error).lower():
-            return False
-        raise
-
-
 def point_in_mainland_china(lat, lng):
     return 72.004 <= lng <= 137.8347 and 0.8293 <= lat <= 55.8271
 
@@ -151,208 +127,9 @@ def infer_trip_map_defaults(db):
 
 
 def init_database():
-    DATABASE.parent.mkdir(parents=True, exist_ok=True)
+    migrate_database(retries=30, retry_delay=2)
     with connection() as db:
-        db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS trips (
-                slug TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                subtitle TEXT NOT NULL,
-                start_date TEXT NOT NULL,
-                end_date TEXT NOT NULL,
-                travelers INTEGER NOT NULL,
-                origin TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                car TEXT NOT NULL,
-                car_image_url TEXT NOT NULL DEFAULT '',
-                trip_region TEXT NOT NULL DEFAULT 'overseas',
-                map_provider TEXT NOT NULL DEFAULT 'google',
-                coord_system TEXT NOT NULL DEFAULT 'wgs84',
-                accommodations TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS nodes (
-                id TEXT PRIMARY KEY,
-                trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
-                title TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                type TEXT NOT NULL,
-                activity_subtype TEXT NOT NULL DEFAULT 'sightseeing',
-                time TEXT NOT NULL,
-                day INTEGER NOT NULL,
-                date TEXT NOT NULL,
-                end_time TEXT NOT NULL DEFAULT '',
-                end_day INTEGER NOT NULL DEFAULT 0,
-                end_date TEXT NOT NULL DEFAULT '',
-                timezone TEXT NOT NULL DEFAULT '',
-                city TEXT NOT NULL DEFAULT '',
-                address TEXT NOT NULL DEFAULT '',
-                lat REAL NOT NULL,
-                lng REAL NOT NULL,
-                status TEXT NOT NULL DEFAULT 'planned'
-                ,image_url TEXT NOT NULL DEFAULT ''
-                ,image_urls TEXT NOT NULL DEFAULT '[]'
-                ,transport_mode TEXT NOT NULL DEFAULT ''
-                ,departure_place TEXT NOT NULL DEFAULT ''
-                ,arrival_place TEXT NOT NULL DEFAULT ''
-                ,departure_timezone TEXT NOT NULL DEFAULT ''
-                ,arrival_timezone TEXT NOT NULL DEFAULT ''
-                ,arrival_time TEXT NOT NULL DEFAULT ''
-                ,arrival_date TEXT NOT NULL DEFAULT ''
-                ,service_number TEXT NOT NULL DEFAULT ''
-                ,duration TEXT NOT NULL DEFAULT ''
-                ,departure_lat REAL
-                ,departure_lng REAL
-                ,arrival_lat REAL
-                ,arrival_lng REAL
-                ,place_provider TEXT NOT NULL DEFAULT 'manual'
-                ,provider_place_id TEXT NOT NULL DEFAULT ''
-                ,coord_system TEXT NOT NULL DEFAULT 'wgs84'
-                ,departure_place_provider TEXT NOT NULL DEFAULT 'manual'
-                ,departure_provider_place_id TEXT NOT NULL DEFAULT ''
-                ,arrival_place_provider TEXT NOT NULL DEFAULT 'manual'
-                ,arrival_provider_place_id TEXT NOT NULL DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS edges (
-                id TEXT PRIMARY KEY,
-                trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
-                source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-                target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-                source_anchor TEXT NOT NULL DEFAULT 'place',
-                target_anchor TEXT NOT NULL DEFAULT 'place',
-                link_kind TEXT NOT NULL DEFAULT 'connection',
-                transport_type TEXT NOT NULL DEFAULT 'car',
-                route_preference TEXT NOT NULL DEFAULT 'recommended',
-                is_manual INTEGER NOT NULL DEFAULT 0,
-                is_locked INTEGER NOT NULL DEFAULT 0,
-                display_status TEXT NOT NULL DEFAULT 'visible',
-                duration TEXT,
-                distance TEXT
-            );
-            CREATE TABLE IF NOT EXISTS geocode_cache (
-                cache_key TEXT PRIMARY KEY,
-                payload TEXT NOT NULL,
-                expires_at REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS route_segments (
-                id TEXT PRIMARY KEY,
-                trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
-                link_type TEXT NOT NULL,
-                link_id TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                travel_mode TEXT NOT NULL,
-                origin_lat REAL NOT NULL,
-                origin_lng REAL NOT NULL,
-                destination_lat REAL NOT NULL,
-                destination_lng REAL NOT NULL,
-                request_fingerprint TEXT NOT NULL,
-                geometry_format TEXT NOT NULL DEFAULT 'latlng_json',
-                geometry_json TEXT NOT NULL DEFAULT '[]',
-                coord_system TEXT NOT NULL DEFAULT 'wgs84',
-                distance_meters INTEGER,
-                duration_seconds INTEGER,
-                distance_text TEXT NOT NULL DEFAULT '',
-                duration_text TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'fresh',
-                expires_at REAL NOT NULL DEFAULT 0,
-                error_message TEXT NOT NULL DEFAULT '',
-                requested_at REAL NOT NULL DEFAULT 0,
-                UNIQUE(trip_slug, link_type, link_id)
-            );
-            CREATE TABLE IF NOT EXISTS lodgings (
-                id TEXT PRIMARY KEY,
-                trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                address TEXT NOT NULL DEFAULT '',
-                city TEXT NOT NULL DEFAULT '',
-                lat REAL NOT NULL,
-                lng REAL NOT NULL,
-                timezone TEXT NOT NULL DEFAULT '',
-                image_url TEXT NOT NULL DEFAULT '',
-                image_urls TEXT NOT NULL DEFAULT '[]',
-                booking_site TEXT NOT NULL DEFAULT '',
-                reservation_no TEXT NOT NULL DEFAULT '',
-                notes TEXT NOT NULL DEFAULT '',
-                place_provider TEXT NOT NULL DEFAULT 'manual',
-                provider_place_id TEXT NOT NULL DEFAULT '',
-                coord_system TEXT NOT NULL DEFAULT 'wgs84'
-            );
-            CREATE TABLE IF NOT EXISTS stays (
-                id TEXT PRIMARY KEY,
-                trip_slug TEXT NOT NULL REFERENCES trips(slug) ON DELETE CASCADE,
-                lodging_id TEXT NOT NULL REFERENCES lodgings(id) ON DELETE CASCADE,
-                check_in_day INTEGER NOT NULL,
-                check_in_date TEXT NOT NULL,
-                check_in_time TEXT NOT NULL,
-                check_out_day INTEGER NOT NULL,
-                check_out_date TEXT NOT NULL,
-                check_out_time TEXT NOT NULL,
-                guests INTEGER NOT NULL DEFAULT 0,
-                room_type TEXT NOT NULL DEFAULT '',
-                price TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'planned',
-                notes TEXT NOT NULL DEFAULT ''
-            );
-            """
-        )
-        count = db.execute("SELECT COUNT(*) FROM trips").fetchone()[0]
-        add_column_if_missing(db, "trips", "car_image_url", "TEXT NOT NULL DEFAULT ''")
-        trip_map_columns_added = False
-        for column, definition in (
-            ("trip_region", "TEXT NOT NULL DEFAULT 'overseas'"),
-            ("map_provider", "TEXT NOT NULL DEFAULT 'google'"),
-            ("coord_system", "TEXT NOT NULL DEFAULT 'wgs84'"),
-        ):
-            trip_map_columns_added = add_column_if_missing(db, "trips", column, definition) or trip_map_columns_added
-        add_column_if_missing(db, "nodes", "image_url", "TEXT NOT NULL DEFAULT ''")
-        add_column_if_missing(db, "nodes", "activity_subtype", "TEXT NOT NULL DEFAULT 'sightseeing'")
-        if add_column_if_missing(db, "nodes", "image_urls", "TEXT NOT NULL DEFAULT '[]'"):
-            db.execute(
-                "UPDATE nodes SET image_urls = json_array(image_url) WHERE image_url != ''"
-            )
-        add_column_if_missing(db, "nodes", "address", "TEXT NOT NULL DEFAULT ''")
-        for column in (
-            "transport_mode",
-            "departure_place",
-            "arrival_place",
-            "arrival_time",
-            "arrival_date",
-            "service_number",
-            "duration",
-        ):
-            add_column_if_missing(db, "nodes", column, "TEXT NOT NULL DEFAULT ''")
-        for column in ("end_time", "end_date"):
-            add_column_if_missing(db, "nodes", column, "TEXT NOT NULL DEFAULT ''")
-        add_column_if_missing(db, "nodes", "end_day", "INTEGER NOT NULL DEFAULT 0")
-        for column in ("timezone", "departure_timezone", "arrival_timezone"):
-            add_column_if_missing(db, "nodes", column, "TEXT NOT NULL DEFAULT ''")
-        for column in ("departure_lat", "departure_lng", "arrival_lat", "arrival_lng"):
-            add_column_if_missing(db, "nodes", column, "REAL")
-        for column, definition in (
-            ("place_provider", "TEXT NOT NULL DEFAULT 'manual'"),
-            ("provider_place_id", "TEXT NOT NULL DEFAULT ''"),
-            ("coord_system", "TEXT NOT NULL DEFAULT 'wgs84'"),
-            ("departure_place_provider", "TEXT NOT NULL DEFAULT 'manual'"),
-            ("departure_provider_place_id", "TEXT NOT NULL DEFAULT ''"),
-            ("arrival_place_provider", "TEXT NOT NULL DEFAULT 'manual'"),
-            ("arrival_provider_place_id", "TEXT NOT NULL DEFAULT ''"),
-        ):
-            add_column_if_missing(db, "nodes", column, definition)
-        for column, definition in (
-            ("source_anchor", "TEXT NOT NULL DEFAULT 'place'"),
-            ("target_anchor", "TEXT NOT NULL DEFAULT 'place'"),
-            ("link_kind", "TEXT NOT NULL DEFAULT 'connection'"),
-            ("route_preference", "TEXT NOT NULL DEFAULT 'recommended'"),
-            ("is_manual", "INTEGER NOT NULL DEFAULT 0"),
-            ("is_locked", "INTEGER NOT NULL DEFAULT 0"),
-            ("display_status", "TEXT NOT NULL DEFAULT 'visible'"),
-        ):
-            add_column_if_missing(db, "edges", column, definition)
-        if trip_map_columns_added:
-            infer_trip_map_defaults(db)
-        migrate_journey_routes(db)
-        migrate_accommodations_to_stays(db)
-        migrate_activity_nodes(db)
+        count = db.execute("SELECT COUNT(*) AS count FROM trips").fetchone()["count"]
         if count == 0:
             reset_trip(db)
             migrate_journey_routes(db)
@@ -484,7 +261,7 @@ def best_lodging_coordinates(db, trip_slug, stay):
 def migrate_accommodations_to_stays(db):
     trips = db.execute("SELECT slug, start_date, accommodations FROM trips").fetchall()
     for trip in trips:
-        existing_count = db.execute("SELECT COUNT(*) FROM lodgings WHERE trip_slug = ?", (trip["slug"],)).fetchone()[0]
+        existing_count = db.execute("SELECT COUNT(*) AS count FROM lodgings WHERE trip_slug = ?", (trip["slug"],)).fetchone()["count"]
         if existing_count:
             continue
         try:
@@ -722,7 +499,7 @@ def serialize_trip(db, slug, include_route_segments=True):
             """SELECT id, source, target, source_anchor, target_anchor, link_kind,
             transport_type, route_preference, is_manual,
             is_locked, display_status, duration, distance
-            FROM edges WHERE trip_slug = ? ORDER BY rowid""",
+            FROM edges WHERE trip_slug = ? ORDER BY sort_order, id""",
             (slug,),
         )
     ]
@@ -778,7 +555,9 @@ def known_trip_center(trip):
 
 @app.get("/api/health")
 def health():
-    return jsonify({"status": "ok"})
+    with connection() as db:
+        db.execute("SELECT 1").fetchone()
+    return jsonify({"status": "ok", "database": "postgresql"})
 
 
 @app.get("/api/trips")

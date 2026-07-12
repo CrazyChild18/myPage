@@ -4,7 +4,8 @@ dist
 .runtime
 .playwright-cli
 backend/*.db
-!backend/voyageplanner.db
+backend/uploads
 .git
 .DS_Store
 .venv
+__pycache__
