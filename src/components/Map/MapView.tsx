@@ -834,17 +834,17 @@ const tripCameraPadding = () => {
   };
 };
 
-// Fit once when a trip opens. Later map gestures belong to the user.
-function FitBoundsController({ points, tripSlug }: { points: [number, number][]; tripSlug: string | null }) {
+// Fit once when a trip or day opens. Later map gestures belong to the user.
+function FitBoundsController({ points, cameraKey }: { points: [number, number][]; cameraKey: string | null }) {
   const map = useMap();
-  const lastFittedTrip = useRef<string | null>(null);
+  const lastFittedCamera = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!tripSlug) {
-      lastFittedTrip.current = null;
+    if (!cameraKey) {
+      lastFittedCamera.current = null;
       return;
     }
-    if (points.length === 0 || lastFittedTrip.current === tripSlug) return;
+    if (points.length === 0 || lastFittedCamera.current === cameraKey) return;
 
     const bounds = L.latLngBounds(points);
     const padding = tripCameraPadding();
@@ -852,9 +852,11 @@ function FitBoundsController({ points, tripSlug }: { points: [number, number][];
       paddingTopLeft: [padding.left, padding.top],
       paddingBottomRight: [padding.right, padding.bottom],
       maxZoom: 14,
+      animate: true,
+      duration: 0.65,
     });
-    lastFittedTrip.current = tripSlug;
-  }, [map, points, tripSlug]);
+    lastFittedCamera.current = cameraKey;
+  }, [cameraKey, map, points]);
 
   return null;
 }
@@ -1027,7 +1029,7 @@ const ItineraryNodeMarker: React.FC<ItineraryNodeMarkerProps> = ({
 type ProviderMapCanvasProps = {
   provider: 'google' | 'amap';
   mode: 'home' | 'trip';
-  tripSlug: string | null;
+  cameraKey: string | null;
   trips: TripSummary[];
   selectedHomeTrip: TripSummary | null;
   selectedHomeSlug: string | null;
@@ -1228,7 +1230,7 @@ const transportInfoHtml = (route: ItineraryNode) => `
 
 const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   mode,
-  tripSlug,
+  cameraKey,
   trips,
   selectedHomeTrip,
   selectedHomeSlug,
@@ -1256,7 +1258,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   const hoverOverlaysRef = useRef<any[]>([]);
   const homeCameraTimersRef = useRef<number[]>([]);
   const lastHomeSlugRef = useRef<string | null>(null);
-  const lastFittedTripRef = useRef<string | null>(null);
+  const lastFittedCameraRef = useRef<string | null>(null);
   const routeVisualsRef = useRef<Array<{
     id: string;
     line: any;
@@ -1315,6 +1317,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
           infoRef.current = new maps.InfoWindow();
           hoverInfoRef.current = new maps.InfoWindow();
         }
+        mapRef.current.setOptions({ gestureHandling: mode === 'trip' ? 'greedy' : 'cooperative' });
         if (!infoRef.current) infoRef.current = new maps.InfoWindow();
         if (!hoverInfoRef.current) hoverInfoRef.current = new maps.InfoWindow();
 
@@ -1404,7 +1407,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
         };
 
         if (mode === 'home') {
-          lastFittedTripRef.current = null;
+          lastFittedCameraRef.current = null;
           trips.forEach((trip) => {
             remember(trip.center_lat, trip.center_lng);
             const marker = new maps.marker.AdvancedMarkerElement({
@@ -1690,9 +1693,9 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
         }
 
         routeVisualsRef.current = routeVisuals;
-        if (hasBounds && mode === 'trip' && tripSlug && lastFittedTripRef.current !== tripSlug) {
+        if (hasBounds && mode === 'trip' && cameraKey && lastFittedCameraRef.current !== cameraKey) {
           mapRef.current.fitBounds(bounds, tripCameraPadding());
-          lastFittedTripRef.current = tripSlug;
+          lastFittedCameraRef.current = cameraKey;
         } else if (hasBounds && mode === 'home' && !selectedHomeTrip) {
           mapRef.current.fitBounds(bounds, 80);
         }
@@ -1703,7 +1706,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
       cancelled = true;
       clearGoogleHomeCameraTimers(homeCameraTimersRef);
     };
-  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, retryToken, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, tripSlug, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
+  }, [activeNodeId, cameraKey, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, retryToken, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -1738,7 +1741,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
 
 const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   mode,
-  tripSlug,
+  cameraKey,
   trips,
   selectedHomeTrip,
   selectedHomeSlug,
@@ -1764,7 +1767,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   const infoRef = useRef<any>(null);
   const hoverInfoRef = useRef<any>(null);
   const hoverOverlaysRef = useRef<any[]>([]);
-  const lastFittedTripRef = useRef<string | null>(null);
+  const lastFittedCameraRef = useRef<string | null>(null);
   const routeVisualsRef = useRef<Array<{
     id: string;
     line: any;
@@ -1810,10 +1813,12 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
             center: [centerLng, centerLat],
             zoom: selectedHomeTrip ? homeTripZoom(selectedHomeTrip) : 4,
             viewMode: '2D',
+            scrollWheel: true,
           });
           mapRef.current.addControl(new AMap.Scale());
           mapRef.current.addControl(new AMap.ToolBar({ position: 'RB' }));
         }
+        mapRef.current.setStatus?.({ scrollWheel: true });
         if (!hoverInfoRef.current) {
           hoverInfoRef.current = new AMap.InfoWindow({
             isCustom: false,
@@ -1888,7 +1893,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
         };
 
         if (mode === 'home') {
-          lastFittedTripRef.current = null;
+          lastFittedCameraRef.current = null;
           trips.forEach((trip) => {
             const position = remember(trip.center_lat, trip.center_lng);
             const marker = new AMap.Marker({
@@ -2177,10 +2182,10 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
         routeVisualsRef.current = routeVisuals;
         if (mode === 'home' && selectedHomeTrip) {
           mapRef.current.setZoomAndCenter(homeTripZoom(selectedHomeTrip), [selectedHomeTrip.center_lng, selectedHomeTrip.center_lat]);
-        } else if (mode === 'trip' && boundsPoints.length && tripSlug && lastFittedTripRef.current !== tripSlug) {
+        } else if (mode === 'trip' && boundsPoints.length && cameraKey && lastFittedCameraRef.current !== cameraKey) {
           const padding = tripCameraPadding();
           mapRef.current.setFitView(overlaysRef.current, false, [padding.top, padding.right, padding.bottom, padding.left]);
-          lastFittedTripRef.current = tripSlug;
+          lastFittedCameraRef.current = cameraKey;
         } else if (mode === 'home' && boundsPoints.length) {
           mapRef.current.setFitView(overlaysRef.current, false, [70, 70, 70, 70]);
         }
@@ -2190,7 +2195,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, tripSlug, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
+  }, [activeNodeId, cameraKey, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -2327,6 +2332,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
   };
 
   const selectedHomeTrip = trips.find((trip) => trip.slug === selectedHomeSlug) || null;
+  const cameraKey = trip ? `${trip.slug}:${activeDay}` : null;
   const activeProvider = mode === 'home'
     ? 'google'
     : mapProviderForTrip(trip);
@@ -2335,7 +2341,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     mode,
     trips,
     selectedHomeTrip,
-    tripSlug: trip?.slug || null,
+    cameraKey,
     selectedHomeSlug,
     visibleNodes,
     visibleTransportRoutes,
@@ -2427,7 +2433,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
         <ZoomControl position="bottomright" />
         {/* Sync controllers */}
         {mode === 'home' ? <HomeMapController trip={selectedHomeTrip} /> : <>
-          {fitPoints.length > 0 && <FitBoundsController points={fitPoints} tripSlug={trip?.slug || null} />}
+          {fitPoints.length > 0 && <FitBoundsController points={fitPoints} cameraKey={cameraKey} />}
         </>}
 
         {mode === 'home' && trips.map((trip) => (
