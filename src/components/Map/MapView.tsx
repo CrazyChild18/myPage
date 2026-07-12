@@ -746,7 +746,7 @@ const RouteOverlapLegend: React.FC<RouteOverlapLegendProps> = ({
       <button
         type="button"
         onClick={() => setExpanded(true)}
-        className="pointer-events-auto absolute bottom-[calc(42dvh+1rem)] left-1/2 z-[10000] flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-full border border-white/60 bg-white/48 px-3.5 text-[10px] font-black text-slate-800 shadow-lg backdrop-blur-2xl backdrop-saturate-150 transition hover:bg-white/72 sm:bottom-5 sm:left-auto sm:right-5 sm:translate-x-0"
+        className="pointer-events-auto absolute bottom-[calc(min(32dvh,16rem)+1rem)] left-1/2 z-[10000] flex min-h-10 -translate-x-1/2 items-center gap-2 rounded-full border border-white/60 bg-white/48 px-3.5 text-[10px] font-black text-slate-800 shadow-lg backdrop-blur-2xl backdrop-saturate-150 transition hover:bg-white/72 sm:bottom-5 sm:left-auto sm:right-5 sm:translate-x-0"
         aria-label={`展开重叠路线图例，共 ${routeCount} 条路线`}
       >
         <Layers3 className="h-4 w-4 text-indigo-600" />
@@ -756,7 +756,7 @@ const RouteOverlapLegend: React.FC<RouteOverlapLegendProps> = ({
   }
 
   return (
-    <div className="pointer-events-auto absolute bottom-[calc(42dvh+1rem)] left-1/2 z-[10000] w-[min(20rem,calc(100%-2rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-white/55 bg-white/48 shadow-[0_18px_46px_rgba(15,23,42,0.22)] backdrop-blur-2xl backdrop-saturate-150 sm:bottom-5 sm:left-auto sm:right-5 sm:translate-x-0">
+    <div className="pointer-events-auto absolute bottom-[calc(min(32dvh,16rem)+1rem)] left-1/2 z-[10000] w-[min(20rem,calc(100%-2rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-white/55 bg-white/48 shadow-[0_18px_46px_rgba(15,23,42,0.22)] backdrop-blur-2xl backdrop-saturate-150 sm:bottom-5 sm:left-auto sm:right-5 sm:translate-x-0">
       <div className="flex items-center justify-between border-b border-white/45 px-3.5 py-2.5">
         <div>
           <div className="text-[11px] font-black text-slate-950">重叠路线</div>
@@ -815,18 +815,46 @@ const transportIconType = (route: ItineraryNode) => {
   return 'other';
 };
 
-// Fit-Bounds helper to encompass active items automatically
-function FitBoundsController({ points, activeDay }: { points: [number, number][]; activeDay: string | number }) {
+const tripCameraPadding = () => {
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  if (width < 640) {
+    return {
+      top: 142,
+      right: 20,
+      bottom: Math.min(276, Math.round(height * 0.34)),
+      left: 20,
+    };
+  }
+  return {
+    top: 112,
+    right: 56,
+    bottom: 56,
+    left: Math.min(520, Math.round(width * 0.36) + 56),
+  };
+};
+
+// Fit once when a trip opens. Later map gestures belong to the user.
+function FitBoundsController({ points, tripSlug }: { points: [number, number][]; tripSlug: string | null }) {
   const map = useMap();
-  const lastFittedDay = useRef<string | number | null>(null);
+  const lastFittedTrip = useRef<string | null>(null);
 
   useEffect(() => {
-    if (points.length === 0 || lastFittedDay.current === activeDay) return;
+    if (!tripSlug) {
+      lastFittedTrip.current = null;
+      return;
+    }
+    if (points.length === 0 || lastFittedTrip.current === tripSlug) return;
 
     const bounds = L.latLngBounds(points);
-    map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
-    lastFittedDay.current = activeDay;
-  }, [activeDay, map, points]);
+    const padding = tripCameraPadding();
+    map.fitBounds(bounds, {
+      paddingTopLeft: [padding.left, padding.top],
+      paddingBottomRight: [padding.right, padding.bottom],
+      maxZoom: 14,
+    });
+    lastFittedTrip.current = tripSlug;
+  }, [map, points, tripSlug]);
 
   return null;
 }
@@ -999,6 +1027,7 @@ const ItineraryNodeMarker: React.FC<ItineraryNodeMarkerProps> = ({
 type ProviderMapCanvasProps = {
   provider: 'google' | 'amap';
   mode: 'home' | 'trip';
+  tripSlug: string | null;
   trips: TripSummary[];
   selectedHomeTrip: TripSummary | null;
   selectedHomeSlug: string | null;
@@ -1199,6 +1228,7 @@ const transportInfoHtml = (route: ItineraryNode) => `
 
 const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   mode,
+  tripSlug,
   trips,
   selectedHomeTrip,
   selectedHomeSlug,
@@ -1226,6 +1256,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
   const hoverOverlaysRef = useRef<any[]>([]);
   const homeCameraTimersRef = useRef<number[]>([]);
   const lastHomeSlugRef = useRef<string | null>(null);
+  const lastFittedTripRef = useRef<string | null>(null);
   const routeVisualsRef = useRef<Array<{
     id: string;
     line: any;
@@ -1373,6 +1404,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
         };
 
         if (mode === 'home') {
+          lastFittedTripRef.current = null;
           trips.forEach((trip) => {
             remember(trip.center_lat, trip.center_lng);
             const marker = new maps.marker.AdvancedMarkerElement({
@@ -1658,8 +1690,12 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
         }
 
         routeVisualsRef.current = routeVisuals;
-        if (hasBounds && mode === 'trip') mapRef.current.fitBounds(bounds, 80);
-        else if (hasBounds && !selectedHomeTrip) mapRef.current.fitBounds(bounds, 80);
+        if (hasBounds && mode === 'trip' && tripSlug && lastFittedTripRef.current !== tripSlug) {
+          mapRef.current.fitBounds(bounds, tripCameraPadding());
+          lastFittedTripRef.current = tripSlug;
+        } else if (hasBounds && mode === 'home' && !selectedHomeTrip) {
+          mapRef.current.fitBounds(bounds, 80);
+        }
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : 'Google Maps 加载失败'));
 
@@ -1667,7 +1703,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
       cancelled = true;
       clearGoogleHomeCameraTimers(homeCameraTimersRef);
     };
-  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, retryToken, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
+  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, retryToken, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, tripSlug, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -1702,6 +1738,7 @@ const GoogleMapCanvas: React.FC<ProviderMapCanvasProps> = ({
 
 const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   mode,
+  tripSlug,
   trips,
   selectedHomeTrip,
   selectedHomeSlug,
@@ -1727,6 +1764,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
   const infoRef = useRef<any>(null);
   const hoverInfoRef = useRef<any>(null);
   const hoverOverlaysRef = useRef<any[]>([]);
+  const lastFittedTripRef = useRef<string | null>(null);
   const routeVisualsRef = useRef<Array<{
     id: string;
     line: any;
@@ -1850,6 +1888,7 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
         };
 
         if (mode === 'home') {
+          lastFittedTripRef.current = null;
           trips.forEach((trip) => {
             const position = remember(trip.center_lat, trip.center_lng);
             const marker = new AMap.Marker({
@@ -2138,14 +2177,20 @@ const AmapCanvas: React.FC<ProviderMapCanvasProps> = ({
         routeVisualsRef.current = routeVisuals;
         if (mode === 'home' && selectedHomeTrip) {
           mapRef.current.setZoomAndCenter(homeTripZoom(selectedHomeTrip), [selectedHomeTrip.center_lng, selectedHomeTrip.center_lat]);
-        } else if (boundsPoints.length) mapRef.current.setFitView(overlaysRef.current, false, [70, 70, 70, 70]);
+        } else if (mode === 'trip' && boundsPoints.length && tripSlug && lastFittedTripRef.current !== tripSlug) {
+          const padding = tripCameraPadding();
+          mapRef.current.setFitView(overlaysRef.current, false, [padding.top, padding.right, padding.bottom, padding.left]);
+          lastFittedTripRef.current = tripSlug;
+        } else if (mode === 'home' && boundsPoints.length) {
+          mapRef.current.setFitView(overlaysRef.current, false, [70, 70, 70, 70]);
+        }
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : '高德地图加载失败'));
 
     return () => {
       cancelled = true;
     };
-  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
+  }, [activeNodeId, mode, nodes, onOpenHomeTrip, onSelectHomeTrip, routeSegments, selectedHomeTrip, selectedHomeSlug, setActiveEdgeId, setActiveNodeId, setHoveredEdgeId, tripSlug, trips, visibleEdges, visibleLodgingRouteSegments, visibleLodgings, visibleNodes, visibleTransportRoutes]);
 
   return (
     <div className="relative h-full w-full">
@@ -2290,6 +2335,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
     mode,
     trips,
     selectedHomeTrip,
+    tripSlug: trip?.slug || null,
     selectedHomeSlug,
     visibleNodes,
     visibleTransportRoutes,
@@ -2381,7 +2427,7 @@ export default function MapView({ mode = 'trip', trips = [], selectedHomeSlug = 
         <ZoomControl position="bottomright" />
         {/* Sync controllers */}
         {mode === 'home' ? <HomeMapController trip={selectedHomeTrip} /> : <>
-          {fitPoints.length > 0 && <FitBoundsController points={fitPoints} activeDay={activeDay} />}
+          {fitPoints.length > 0 && <FitBoundsController points={fitPoints} tripSlug={trip?.slug || null} />}
         </>}
 
         {mode === 'home' && trips.map((trip) => (

@@ -156,7 +156,7 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
   const totalDays = trips.reduce((sum, trip) => sum + trip.day_count, 0);
 
   return (
-    <div className="pointer-events-none relative z-[800] h-screen min-h-[680px] w-full overflow-hidden text-white">
+    <div className="pointer-events-none relative z-[800] h-[100dvh] min-h-0 w-full overflow-hidden text-white sm:min-h-[680px]">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_45%,transparent_20%,rgba(2,6,23,0.22)_65%,rgba(2,6,23,0.72)_100%)]" />
       <div className="pointer-events-none absolute inset-x-0 top-0 h-48 bg-gradient-to-b from-slate-950/75 to-transparent" />
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-64 bg-gradient-to-t from-slate-950/80 to-transparent" />
@@ -269,18 +269,18 @@ export default function HomeView({ onOpenTrip, onCreateTrip, selectedSlug, onSel
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="pointer-events-auto absolute bottom-5 right-4 z-[1001] w-[calc(100%-2rem)] overflow-hidden rounded-[24px] border border-white/15 bg-slate-950/84 shadow-2xl backdrop-blur-2xl sm:hidden"
+            className="pointer-events-auto absolute bottom-[max(.75rem,env(safe-area-inset-bottom))] right-3 z-[1001] w-[calc(100%-1.5rem)] overflow-hidden rounded-[18px] border border-white/15 bg-slate-950/86 shadow-2xl backdrop-blur-2xl sm:hidden"
           >
-            <div className="flex gap-3 p-3">
-              <img src={selectedTrip.cover_image_url} {...responsiveImageProps(selectedTrip.cover_image_url, '112px')} alt="" className="h-28 w-28 shrink-0 rounded-2xl object-cover" />
-              <div className="min-w-0 flex-1 py-1">
-                <div className="text-[10px] font-bold text-indigo-300">{formatDateRange(selectedTrip)}</div>
-                <h2 className="mt-1 line-clamp-2 text-sm font-black">{selectedTrip.title}</h2>
-                <div className="mt-2 flex flex-wrap gap-1.5 text-[9px] font-bold text-slate-300">
+            <div className="flex gap-2.5 p-2.5">
+              <img src={selectedTrip.cover_image_url} {...responsiveImageProps(selectedTrip.cover_image_url, '80px')} alt="" className="h-20 w-20 shrink-0 rounded-xl object-cover" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[9px] font-bold text-indigo-300">{formatDateRange(selectedTrip)}</div>
+                <h2 className="mt-0.5 truncate text-[13px] font-black">{selectedTrip.title}</h2>
+                <div className="mt-1 flex gap-3 text-[9px] font-bold text-slate-300">
                   <span className="rounded-full bg-white/10 px-2 py-1">{selectedTrip.day_count} 天</span>
                   <span className="rounded-full bg-white/10 px-2 py-1">{selectedTrip.node_count} 个地点</span>
                 </div>
-                <button onClick={() => openTrip(selectedTrip.slug)} className="mt-3 flex items-center gap-1.5 rounded-xl bg-indigo-500 px-3 py-2 text-[11px] font-bold text-white">
+                <button onClick={() => openTrip(selectedTrip.slug)} className="mt-2 flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3 py-1.5 text-[10px] font-bold text-white">
                   打开旅行计划 <ArrowUpRight className="h-3.5 w-3.5" />
                 </button>
               </div>

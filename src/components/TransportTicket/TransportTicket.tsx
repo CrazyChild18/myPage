@@ -52,7 +52,7 @@ export default function TransportTicket({ node, compact = false }: { node: Itine
     : `${timeZoneOptionLabel(departureTimezone)} → ${timeZoneOptionLabel(arrivalTimezone)}`;
 
   return (
-    <div className={`relative overflow-hidden rounded-2xl border border-white/70 bg-white shadow-md ${compact ? 'p-3' : 'p-4'}`}>
+    <div className={`relative overflow-hidden rounded-2xl border border-white/70 bg-white shadow-md ${compact ? 'p-2' : 'p-4'}`}>
       <div className={`absolute inset-y-0 left-0 w-1.5 bg-gradient-to-b ${meta.tone}`} />
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
@@ -64,19 +64,19 @@ export default function TransportTicket({ node, compact = false }: { node: Itine
         <span className="text-[9px] font-bold text-slate-400">DAY {node.day} · {node.date.slice(5)}</span>
       </div>
 
-      <div className={`mt-3 grid grid-cols-[1fr_auto_1fr] items-center ${compact ? 'gap-2' : 'gap-4'}`}>
+      <div className={`grid grid-cols-[1fr_auto_1fr] items-center ${compact ? 'mt-2 gap-2' : 'mt-3 gap-4'}`}>
         <div>
-          <div className={`${compact ? 'text-lg' : 'text-2xl'} font-black tabular-nums text-slate-950`}>{node.time}</div>
+          <div className={`${compact ? 'text-base' : 'text-2xl'} font-black tabular-nums text-slate-950`}>{node.time}</div>
           <div className="mt-0.5 text-[8px] font-black text-sky-600">{departureOffset}</div>
           <div className="truncate text-[10px] font-bold text-slate-500">{departure}</div>
         </div>
-        <div className="flex min-w-16 flex-col items-center text-slate-400">
+        <div className={`flex flex-col items-center text-slate-400 ${compact ? 'min-w-12' : 'min-w-16'}`}>
           <Icon className="h-4 w-4" />
           <div className="my-1 w-full border-t border-dashed border-slate-300" />
           <span className="flex items-center gap-1 text-[8px] font-bold"><Clock3 className="h-2.5 w-2.5" />实际 {actualDuration}</span>
         </div>
         <div className="text-right">
-          <div className={`${compact ? 'text-lg' : 'text-2xl'} font-black tabular-nums text-slate-950`}>{arrivalTime}</div>
+          <div className={`${compact ? 'text-base' : 'text-2xl'} font-black tabular-nums text-slate-950`}>{arrivalTime}</div>
           <div className="mt-0.5 text-[8px] font-black text-sky-600">{arrivalOffset}</div>
           <div className="truncate text-[10px] font-bold text-slate-500">{arrival}</div>
         </div>

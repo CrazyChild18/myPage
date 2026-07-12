@@ -491,20 +491,20 @@ function MobileEventCard({
   const nodeMeta = itineraryTypeTone(node);
   const images = imagesOf(node);
   const duration = eventDurationMinutes(node);
-  const width = Math.max(220, Math.min(340, duration * 1.6));
+  const width = Math.max(190, Math.min(286, duration * 1.25));
 
   if (node.type === 'transport') {
     return (
       <div
         ref={(element) => setCardRef(node.id, element)}
         onClick={onSelect}
-        className={`shrink-0 snap-center cursor-pointer transition ${selected ? 'rounded-2xl ring-2 ring-sky-400/40' : ''}`}
+        className={`shrink-0 snap-center cursor-pointer transition ${selected ? 'rounded-xl ring-2 ring-sky-400/40' : ''}`}
         style={{ width }}
       >
         {isTicketTransport(node) ? (
           <TransportTicket node={node} compact />
         ) : (
-          <div className="rounded-2xl border border-sky-100 bg-sky-50/85 px-3 py-2.5 shadow-sm">
+          <div className="rounded-xl border border-sky-100 bg-sky-50/85 px-2.5 py-2 shadow-sm">
             <div className="text-[10px] font-black text-sky-700">{node.time} - {node.end_time || node.arrival_time || formatTime(parseTime(node.time) + duration)}</div>
             <div className="mt-1 text-xs font-black text-slate-800">{node.title}</div>
             <p className="mt-0.5 line-clamp-1 text-[9px] font-bold text-slate-500">{nodeLocationText(node)}</p>
@@ -518,20 +518,20 @@ function MobileEventCard({
     <article
       ref={(element) => setCardRef(node.id, element)}
       onClick={onSelect}
-      className={`shrink-0 snap-center cursor-pointer overflow-hidden rounded-2xl border transition ${
+      className={`shrink-0 snap-center cursor-pointer overflow-hidden rounded-xl border transition ${
         selected
           ? 'border-indigo-200 bg-white/92 shadow-xl ring-2 ring-indigo-500/12'
           : 'border-white/60 bg-white/62 shadow-md hover:bg-white/82'
       }`}
       style={{ width }}
     >
-      <div className="grid grid-cols-[80px_minmax(0,1fr)] gap-3 p-3">
+      <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2 p-2">
         <button
           onClick={(event) => {
             event.stopPropagation();
             if (images[0]) onPreview({ node, index: 0 });
           }}
-          className={`group relative h-20 overflow-hidden rounded-xl ${images[0] ? 'bg-slate-200' : nodeMeta.card}`}
+          className={`group relative h-16 overflow-hidden rounded-lg ${images[0] ? 'bg-slate-200' : nodeMeta.card}`}
           type="button"
         >
           {images[0] ? (
@@ -549,17 +549,17 @@ function MobileEventCard({
         <div className="min-w-0">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <div className="text-[10px] font-black tabular-nums text-slate-500">
+              <div className="text-[9px] font-black tabular-nums text-slate-500">
                 {node.time} - {node.end_time || formatTime(parseTime(node.time) + duration)}
               </div>
-              <h4 className="mt-1 truncate text-sm font-black text-slate-950">{node.title}</h4>
+              <h4 className="mt-0.5 truncate text-xs font-black text-slate-950">{node.title}</h4>
             </div>
             <span className={`shrink-0 rounded-full px-2 py-0.5 text-[8px] font-black ${nodeMeta.timeline}`}>
               {itineraryTypeLabel(node)}
             </span>
           </div>
-          <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-slate-500">{nodeLocationText(node)}</p>
-          <div className="mt-2 border-t border-slate-100/80 pt-2 text-[9px] font-semibold text-slate-400">
+          <p className="mt-0.5 line-clamp-1 text-[9px] leading-relaxed text-slate-500">{nodeLocationText(node)}</p>
+          <div className="mt-1 border-t border-slate-100/80 pt-1 text-[8px] font-semibold text-slate-400">
             持续 {duration >= 60 ? `${Math.floor(duration / 60)}小时${duration % 60 ? `${duration % 60}分` : ''}` : `${duration}分钟`}
           </div>
         </div>
@@ -592,7 +592,7 @@ function MobileRouteCard({
       onMouseLeave={() => onHover(false)}
       onFocus={() => onHover(true)}
       onBlur={() => onHover(false)}
-      className={`flex w-36 shrink-0 snap-center items-center gap-2 rounded-2xl border px-3 py-2 text-left transition ${
+      className={`flex w-32 shrink-0 snap-center items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition ${
         active ? `bg-white/90 shadow-md ring-1 ring-indigo-200 ${tone.border}` : `bg-white/46 hover:bg-white/68 ${tone.border}`
       }`}
     >
@@ -625,7 +625,7 @@ function MobileLodgingCard({
       ref={(element) => setCardRef(lodging.id, element)}
       type="button"
       onClick={onSelect}
-      className={`w-56 shrink-0 snap-center rounded-2xl border p-3 text-left shadow-sm transition ${
+      className={`w-48 shrink-0 snap-center rounded-xl border p-2 text-left shadow-sm transition ${
         selected
           ? 'border-emerald-300 bg-emerald-50/92 ring-2 ring-emerald-400/20'
           : 'border-emerald-100 bg-emerald-50/78 hover:border-emerald-200'
@@ -640,7 +640,7 @@ function MobileLodgingCard({
           D{stay.check_in_day}-D{stay.check_out_day}
         </span>
       </div>
-      <div className="mt-1.5 truncate text-sm font-black text-slate-950">{lodging.name}</div>
+      <div className="mt-1 truncate text-xs font-black text-slate-950">{lodging.name}</div>
       <div className="mt-1 truncate text-[10px] font-bold text-slate-500">{lodging.city || lodging.address || '住宿地址待补充'}</div>
     </button>
   );
@@ -1122,22 +1122,22 @@ export default function Timeline() {
         />
       )}
 
-      <div className="mb-3 shrink-0 rounded-2xl border border-white/50 bg-white/42 p-3 shadow-lg backdrop-blur-md">
-        <div className="mb-2 flex items-center justify-between gap-2">
+      <div className="mb-2 shrink-0 rounded-xl border border-white/50 bg-white/42 p-2 shadow-lg backdrop-blur-md sm:mb-3 sm:rounded-2xl sm:p-3">
+        <div className="mb-1.5 flex items-center justify-between gap-2 sm:mb-2">
           <div>
             <div className="text-xs font-black text-slate-900">按天时间表</div>
             <div className="mt-0.5 text-[10px] font-bold text-slate-500">
               {activeDay === 'all' ? '全览' : `D${activeDay} · ${formatShortDate(currentDate)}`}
             </div>
           </div>
-          <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[10px] font-black text-indigo-700">
+          <span className="rounded-full bg-indigo-50 px-2 py-1 text-[9px] font-black text-indigo-700 sm:px-2.5 sm:text-[10px]">
             {Math.max(0, visibleEventCount - visibleTransportCount)} 个地点 · {visibleTransportCount} 段交通
           </span>
         </div>
         <div className="flex gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
           <button
             onClick={() => setActiveDay('all')}
-            className={`shrink-0 rounded-xl border px-4 py-1.5 text-xs font-semibold ${
+            className={`shrink-0 rounded-lg border px-3 py-1 text-[11px] font-semibold sm:rounded-xl sm:px-4 sm:py-1.5 sm:text-xs ${
               activeDay === 'all' ? 'border-slate-900 bg-slate-900 text-white' : 'border-white bg-white/50 text-slate-700'
             }`}
             type="button"
@@ -1148,7 +1148,7 @@ export default function Timeline() {
             <button
               key={day}
               onClick={() => setActiveDay(day)}
-              className={`shrink-0 rounded-xl border px-4 py-1.5 text-left text-xs font-semibold ${
+              className={`shrink-0 rounded-lg border px-3 py-1 text-left text-[11px] font-semibold sm:rounded-xl sm:px-4 sm:py-1.5 sm:text-xs ${
                 activeDay === day ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-white bg-white/50 text-slate-700'
               }`}
               type="button"
@@ -1164,7 +1164,7 @@ export default function Timeline() {
         <div
           ref={mobileTrackRef}
           onScroll={syncActiveCard}
-          className="flex min-h-0 flex-1 snap-x snap-mandatory gap-3 overflow-x-auto overflow-y-hidden px-[7%] pb-4 no-scrollbar"
+          className="flex min-h-0 flex-1 snap-x snap-mandatory gap-2 overflow-x-auto overflow-y-hidden px-[4%] pb-1 no-scrollbar"
         >
           {entries.map((entry, index) => {
             if (entry.kind === 'event') {

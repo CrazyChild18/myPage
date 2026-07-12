@@ -82,39 +82,39 @@ export default function App() {
         />
       )}
 
-      {selectedTripSlug && <header className={`z-[1100] mx-auto w-full shrink-0 pt-[max(1rem,env(safe-area-inset-top))] print:hidden ${tripHeaderSpacing} max-w-none ${activeTab === 'explore' ? 'absolute inset-x-0 top-0' : 'relative'}`}>
-        <div className="flex flex-col items-center justify-between gap-3 rounded-2xl border border-white/60 bg-white/65 px-4 py-3 shadow-xl backdrop-blur-2xl md:flex-row">
-          <div className="flex w-full min-w-0 items-center gap-3 md:w-auto">
+      {selectedTripSlug && <header className={`z-[1100] mx-auto w-full shrink-0 pt-[max(.5rem,env(safe-area-inset-top))] sm:pt-[max(1rem,env(safe-area-inset-top))] print:hidden ${tripHeaderSpacing} max-w-none ${activeTab === 'explore' ? 'absolute inset-x-0 top-0' : 'relative'}`}>
+        <div className="flex flex-col items-center justify-between gap-2 rounded-xl border border-white/60 bg-white/65 px-3 py-2 shadow-xl backdrop-blur-2xl sm:gap-3 sm:rounded-2xl sm:px-4 sm:py-3 md:flex-row">
+          <div className="flex w-full min-w-0 items-center gap-2 sm:gap-3 md:w-auto">
             <button
               onClick={backHome}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/70 text-slate-600 transition hover:bg-white hover:text-indigo-600"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200/70 bg-white/70 text-slate-600 transition hover:bg-white hover:text-indigo-600 sm:h-10 sm:w-10 sm:rounded-xl"
               title="返回旅行地图"
               aria-label="返回旅行地图"
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-indigo-300 shadow-lg">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-indigo-300 shadow-lg sm:h-10 sm:w-10 sm:rounded-xl">
               <Navigation className="h-5 w-5" />
             </div>
             <div className="min-w-0">
               <h1 className="truncate text-sm font-black tracking-tight text-slate-900 sm:text-base">{trip?.title || '正在加载旅行计划'}</h1>
-              <p className="mt-0.5 truncate text-[10px] font-medium text-slate-500 sm:text-xs">
+              <p className="mt-0.5 hidden truncate text-[10px] font-medium text-slate-500 sm:block sm:text-xs">
                 {trip ? `${trip.start_date} 至 ${trip.end_date} · ${trip.subtitle}` : '正在连接行程服务...'}
               </p>
             </div>
           </div>
 
-          <nav className="flex w-full items-center gap-1 rounded-xl border border-slate-200/60 bg-slate-100/75 p-1 md:w-auto">
+          <nav className="flex w-full items-center gap-1 rounded-lg border border-slate-200/60 bg-slate-100/75 p-1 sm:rounded-xl md:w-auto">
             {tabs.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => setActiveTab(id)}
                 aria-current={activeTab === id ? 'page' : undefined}
-                className={`flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold transition md:min-h-0 md:flex-none md:text-[11px] ${
+                className={`flex min-h-9 flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-[10px] font-bold transition sm:min-h-10 sm:gap-1.5 sm:rounded-lg sm:px-3 sm:py-2 sm:text-xs md:min-h-0 md:flex-none md:text-[11px] ${
                   activeTab === id ? 'bg-white text-indigo-950 shadow-sm' : 'text-slate-500 hover:bg-white/50 hover:text-slate-800'
                 }`}
               >
-                <Icon className={`h-3.5 w-3.5 ${activeTab === id ? 'text-indigo-500' : ''}`} />
+                <Icon className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${activeTab === id ? 'text-indigo-500' : ''}`} />
                 {label}
               </button>
             ))}
